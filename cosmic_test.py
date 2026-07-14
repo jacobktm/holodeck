@@ -281,6 +281,7 @@ def build_docker_run_args(state, pkg_state, session_cgroup, group_add_args, nest
         "-v", f"/usr/share/pop:/usr/share/pop:ro",
         "-v", f"/run/dbus/system_bus_socket:/run/dbus/system_bus_socket",
         "-v", f"/run/udev:/run/udev:ro",
+        "-v", f"/run/media:/run/media:rw",
     ]
     args.extend(base_mounts)
 
