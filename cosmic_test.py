@@ -230,9 +230,7 @@ def build_docker_run_args(state, pkg_state, session_cgroup, group_add_args, nest
     args = []
 
     if not nested:
-        args.append("--pid")
-
-        args.append("host")
+        args.extend(["--pid", "host"])
 
     args.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
     args.extend(group_add_args)
@@ -274,7 +272,7 @@ def build_docker_run_args(state, pkg_state, session_cgroup, group_add_args, nest
 
     args.extend(["-e", f"LAUNCH_ARGS={launch_args}"])
     args.extend(["-e", f"SESSION_CGROUP={session_cgroup}"])
-    args.extend(["-e", f"NEEDS_LOGIND={str(state['needs_logind']).lower()}"])
+    args.extend(["-e", f"NEEDS_LOGIND={str(pkg_state['needs_logind']).lower()}"])
 
     # Base mounts
     base_mounts = [
