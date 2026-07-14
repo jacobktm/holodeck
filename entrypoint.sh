@@ -151,12 +151,11 @@ cleanup() {
             cat "/tmp/${a}.log"
         fi
     done
-    # Kill all child/descendant processes (including forked daemons like cosmic-files)
-    # With --pid host, daemonized processes escape our process group via setsid/daemon,
-    # so we must kill by process name to catch them all
-    for a in $APPS; do
-        pkill -f "$a" 2>/dev/null || true
-    done
+    # Kill child processes. With --pid host, daemonized processes get
+    # reparented to PID 1, so -P $$ only catches direct children.
+    # We do NOT use pkill -f here — it matches ALL host processes and
+    # would kill the user's cosmic-session. The Python orchestrator
+    # handles targeted cleanup via docker kill + docker rm -f.
     pkill -P $$ 2>/dev/null || true
     kill -- -$$ 2>/dev/null || true
     kill $$ 2>/dev/null || true

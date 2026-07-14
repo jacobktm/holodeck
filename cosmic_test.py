@@ -359,7 +359,7 @@ def main():
     # Signal handler for clean shutdown on SIGTERM
     def shutdown_handler(signum, frame):
         print(f"\nReceived signal {signum}, cleaning up...")
-        kill_container_processes(container_name)
+        kill_container_processes(container_name, state["pkg_names"])
         container_rm_force(container_name)
         sys.exit(0)
 
@@ -376,7 +376,7 @@ def main():
     )
     if result.stdout.strip():
         print(f"Cleaning up orphaned processes from previous run...")
-        kill_container_processes(container_name)
+        kill_container_processes(container_name, state["pkg_names"])
         container_rm_force(container_name)
 
     # Build image
@@ -502,7 +502,7 @@ def main():
         print("\nDetaching from container...")
 
     # Kill all container processes (including daemonized ones that escaped to PID 1)
-    kill_container_processes(container_name)
+    kill_container_processes(container_name, state["pkg_names"])
     container_rm_force(container_name)
 
     # Restart host daemons we killed
