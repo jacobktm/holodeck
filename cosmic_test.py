@@ -95,9 +95,11 @@ def load_package_configs(pkg_names, script_dir):
     needs_logind = False
     needs_udev = False
     nested_session = False
+    mount_host_libs = False
     all_packages = []
     extra_packages = []
     groups = []
+    host_bins = []
     mount_args = []
     pkg_types = []
     pkg_args = {}  # pkg -> args string
@@ -121,11 +123,15 @@ def load_package_configs(pkg_names, script_dir):
             needs_udev = True
         if cfg.nested_session:
             nested_session = True
+        if cfg.mount_host_libs:
+            mount_host_libs = True
 
         if cfg.extra_packages:
             extra_packages.extend(cfg.extra_packages)
         if cfg.groups:
             groups.extend(cfg.groups)
+        if cfg.host_bins:
+            host_bins.extend(cfg.host_bins)
 
         # Resolve HOME in args
         args_list = [a.replace("HOME", HOME) for a in cfg.args]
@@ -143,9 +149,11 @@ def load_package_configs(pkg_names, script_dir):
         "needs_logind": needs_logind,
         "needs_udev": needs_udev,
         "nested_session": nested_session,
+        "mount_host_libs": mount_host_libs,
         "all_packages": all_packages,
         "extra_packages": extra_packages,
         "groups": groups,
+        "host_bins": host_bins,
         "mount_args": mount_args,
         "pkg_types": pkg_types,
         "pkg_args": pkg_args,
@@ -276,16 +284,28 @@ def build_docker_run_args(state, pkg_state, session_cgroup, group_add_args, nest
     args.extend(["-e", f"SESSION_CGROUP={session_cgroup}"])
     args.extend(["-e", f"NEEDS_LOGIND={str(pkg_state['needs_logind']).lower()}"])
 
+    if pkg_state["host_bins"]:
+        args.extend(["-e", f"HOST_BINS={':'.join(pkg_state['host_bins'])}"])
+
     # Base mounts
     base_mounts = [
         "-v", f"/etc/passwd:/etc/passwd:ro",
         "-v", f"/etc/group:/etc/group:ro",
         "-v", f"/usr/share/pop:/usr/share/pop:ro",
         "-v", f"/run/dbus/system_bus_socket:/run/dbus/system_bus_socket",
-        "-v", f"/run/udev:/run/udev:ro",
-        "-v", f"/run/media:/run/media:rw",
         "-v", f"/media:/media:rw",
     ]
+    if Path("/opt").exists():
+        base_mounts.extend(["-v", "/opt:/host/opt:ro"])
+    if Path("/snap").exists():
+        base_mounts.extend(["-v", "/snap:/host/snap:ro"])
+    if pkg_state["mount_host_libs"]:
+        base_mounts.extend([
+            "-v", "/usr/bin:/host/usr/bin:ro",
+            "-v", "/usr/sbin:/host/usr/sbin:ro",
+            "-v", "/usr/lib:/host/usr/lib:ro",
+            "-v", "/usr/share:/host/usr/share:ro",
+        ])
     args.extend(base_mounts)
 
     # Package-specific mounts
@@ -485,6 +505,19 @@ def main():
     print(" CONTAINER STATUS")
     print("=" * 40)
     container_status(container_name)
+
+    # Wait for entrypoint setup to complete before running diagnostics
+    print("Waiting for container setup to complete...")
+    for _ in range(50):  # 5 seconds max
+        result = subprocess.run(
+            ["docker", "exec", container_name, "test", "-f", "/tmp/cosmic-setup-done"],
+            capture_output=True, check=False,
+        )
+        if result.returncode == 0:
+            break
+        time.sleep(0.1)
+    else:
+        print("WARN: Setup signal not found after 5s — proceeding anyway")
 
     # Run diagnostics
     diagnostics_path = SCRIPT_DIR / "diagnostics.py"

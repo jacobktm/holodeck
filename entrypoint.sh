@@ -2,6 +2,111 @@
 set -e
 cd "$HOME" 2>/dev/null || cd /
 
+# ── Link specific host binaries and their library dependencies ──
+link_host_binary() {
+    local host_bin="$1"
+    local name=$(basename "$host_bin")
+    local dst="/usr/bin/$name"
+
+    if [ ! -e "$host_bin" ]; then
+        echo "[entrypoint] WARN: $host_bin not found, skipping"
+        return 1
+    fi
+
+    sudo ln -sf "$host_bin" "$dst" 2>/dev/null
+    echo "[entrypoint] Linked $host_bin -> $dst"
+
+    # Collect RUNPATH/RPATH from the binary for targeted lib lookups
+    local rpaths=""
+    local rpath_line=$(readelf -d "$dst" 2>/dev/null | grep -E 'RPATH|RUNPATH' | head -1)
+    if [ -n "$rpath_line" ]; then
+        rpaths=$(echo "$rpath_line" | sed 's/.*\[\(.*\)\]/\1/' | tr ':' ' ')
+        echo "[entrypoint] Binary rpaths: $rpaths"
+    fi
+
+    # Find missing libraries via ldd and symlink them from host
+    local lib_count=0
+    while IFS= read -r line; do
+        local lib_name=$(echo "$line" | awk '{print $1}')
+        # Search host: first try RUNPATH dirs, then fall back to full search
+        local host_lib=""
+        for rp in $rpaths; do
+            local candidate="/host${rp}/${lib_name}"
+            if [ -e "$candidate" ]; then
+                host_lib="$candidate"
+                break
+            fi
+        done
+        if [ -z "$host_lib" ]; then
+            host_lib=$(find /host/usr/lib -name "$lib_name" \( -type f -o -type l \) 2>/dev/null | head -1)
+        fi
+        if [ -n "$host_lib" ]; then
+            local real_path="/usr/lib/${host_lib#/host/usr/lib/}"
+            sudo mkdir -p "$(dirname "$real_path")" 2>/dev/null
+            if [ ! -e "$real_path" ]; then
+                sudo ln -sf "$host_lib" "$real_path" 2>/dev/null
+                lib_count=$((lib_count + 1))
+                echo "[entrypoint]   symlinked $lib_name -> $host_lib"
+            fi
+        else
+            echo "[entrypoint]   WARN: $lib_name not found on host"
+        fi
+    done < <(ldd "$dst" 2>&1 | grep "not found")
+
+    # Re-run until no more missing libs (symlinking one lib may reveal its own deps)
+    local pass=1
+    while true; do
+        local missing=$(ldd "$dst" 2>&1 | grep "not found" || true)
+        if [ -z "$missing" ]; then
+            echo "[entrypoint] All libraries resolve for $name (pass $pass)"
+            break
+        fi
+        local added=0
+        while IFS= read -r line; do
+            local lib_name=$(echo "$line" | awk '{print $1}')
+            local host_lib=""
+            for rp in $rpaths; do
+                local candidate="/host${rp}/${lib_name}"
+                if [ -e "$candidate" ]; then
+                    host_lib="$candidate"
+                    break
+                fi
+            done
+            if [ -z "$host_lib" ]; then
+                host_lib=$(find /host/usr/lib -name "$lib_name" \( -type f -o -type l \) 2>/dev/null | head -1)
+            fi
+            if [ -n "$host_lib" ]; then
+                local real_path="/usr/lib/${host_lib#/host/usr/lib/}"
+                sudo mkdir -p "$(dirname "$real_path")" 2>/dev/null
+                if [ ! -e "$real_path" ]; then
+                    sudo ln -sf "$host_lib" "$real_path" 2>/dev/null
+                    added=$((added + 1))
+                    echo "[entrypoint]   pass $pass: symlinked $lib_name -> $host_lib"
+                fi
+            else
+                echo "[entrypoint]   pass $pass: WARN: $lib_name not found on host"
+            fi
+        done <<< "$missing"
+        if [ "$added" -eq 0 ]; then
+            echo "[entrypoint] WARN: $name still has unresolved libs after pass $pass"
+            echo "$missing" | while IFS= read -r line; do echo "[entrypoint]   $line"; done
+            break
+        fi
+        pass=$((pass + 1))
+    done
+}
+
+if [ -n "$HOST_BINS" ]; then
+    echo "[entrypoint] Host binaries to link: $HOST_BINS"
+    for bin_name in $(echo "$HOST_BINS" | tr ':' ' '); do
+        [ -z "$bin_name" ] && continue
+        link_host_binary "/host/usr/bin/$bin_name" || true
+    done
+fi
+
+# Add host binary/lib paths at end of PATH (lower priority than container's own)
+export PATH="$PATH:/host/usr/bin:/host/usr/sbin:/host/usr/lib"
+
 source /lib/signal.sh
 
 # ── Nested session mode ──────────────────────────────────────────────
@@ -136,6 +241,9 @@ get_args() {
         esac
     done
 }
+
+# Signal that setup is complete (symlinks, cgroup fix, daemons all ready)
+touch /tmp/cosmic-setup-done
 
 for a in $APPS; do
     args=$(get_args "$a")

@@ -77,7 +77,9 @@ RUN chmod +x /entrypoint.sh /lib/signal.sh
 {branch_sources}{branch_pins}
 RUN apt-get update
 RUN apt-get full-upgrade -y --allow-downgrades
-RUN apt-get install -y --allow-downgrades {packages_csv}{extra}
+RUN apt-get install -y --allow-downgrades {packages_csv}{extra} sudo
+RUN printf 'auth sufficient pam_permit.so\\naccount sufficient pam_permit.so\\n' > /etc/pam.d/sudo
+RUN printf 'ALL ALL=(ALL) NOPASSWD: ALL\\n' > /etc/sudoers.d/nopasswd && chmod 0440 /etc/sudoers.d/nopasswd
 RUN rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["/entrypoint.sh"]

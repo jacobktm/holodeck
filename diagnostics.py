@@ -381,6 +381,26 @@ def container_checks(name):
     else:
         info("  /media/ not accessible or empty")
 
+    # Check mounted drive permissions and filesystem type
+    ok, mount_out = sh_ok(f"docker exec {name} mount | grep /media 2>&1")
+    if mount_out:
+        info(f"  Mount info: {mount_out.strip()}")
+
+    ok, acl_out = sh_ok(f"docker exec {name} getfacl/media/USERNAME 2>&1")
+    if acl_out:
+        info(" /media/USERNAME ACL:")
+        for line in acl_out.splitlines()[:10]:
+            info(f"    {line}")
+
+    # Try listing the mounted drive contents
+    ok, drive_out = sh_ok(f"docker exec {name} ls -la/media/USERNAME/ 2>&1")
+    if drive_out:
+        info(" /media/USERNAME/ contents:")
+        for line in drive_out.splitlines()[:10]:
+            info(f"    {line}")
+    else:
+        warn("  Cannot list/media/USERNAME/")
+
     ok, runmedia_out = sh_ok(f"docker exec {name} ls -la /run/media/ 2>&1")
     if ok and runmedia_out:
         info("  /run/media contents:")
@@ -401,6 +421,31 @@ def container_checks(name):
             for line in ls_out.splitlines():
                 if "USERNAME" in line or "root" in line or "total" in line:
                     info(f"  {mount_dir}: {line}")
+
+    # Check if host binaries are accessible
+    ok, path_out = sh_ok(f"docker exec {name} echo $PATH 2>&1")
+    if path_out:
+        info(f"  PATH: {path_out.strip()}")
+
+    for binary in ["eog", "cosmic-player", "xdg-open"]:
+        ok, which_out = sh_ok(f"docker exec {name} which {binary} 2>&1")
+        if ok and which_out:
+            pass_(f"{binary} found: {which_out.strip()}")
+        else:
+            warn(f"{binary} not found in container PATH")
+
+    # Check if symlinks exist
+    ok, ls_out = sh_ok(f"docker exec {name} ls -la /usr/bin/eog 2>&1")
+    if ls_out:
+        info(f"  /usr/bin/eog: {ls_out.strip()}")
+    ok, ls_out = sh_ok(f"docker exec {name} ls -la /host/usr/bin/eog 2>&1")
+    if ls_out:
+        info(f"  /host/usr/bin/eog: {ls_out.strip()}")
+
+    # Check desktop entries loaded
+    ok, de_out = sh_ok(f"docker exec {name} ls /usr/share/applications/ 2>&1 | wc -l")
+    if de_out:
+        info(f"  Desktop entries in /usr/share/applications: {de_out.strip()}")
 
     # Try to mount an unmounted volume
     ok, vol_out = sh_ok(

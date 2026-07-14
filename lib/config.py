@@ -18,9 +18,11 @@ class PackageConfig:
     needs_logind: bool = False
     needs_udev: bool = False
     nested_session: bool = False
+    mount_host_libs: bool = False
     args: list = field(default_factory=list)
     extra_packages: list = field(default_factory=list)
     groups: list = field(default_factory=list)
+    host_bins: list = field(default_factory=list)
     mounts: list = field(default_factory=list)
 
 
@@ -42,8 +44,10 @@ def load_config(toml_path: Path) -> PackageConfig:
         needs_logind=cfg.get("needs_logind", False),
         needs_udev=cfg.get("needs_udev", False),
         nested_session=cfg.get("nested_session", False),
+        mount_host_libs=cfg.get("mount_host_libs", False),
         args=cfg.get("args", []),
         extra_packages=cfg.get("extra_packages", []),
         groups=cfg.get("groups", []),
+        host_bins=cfg.get("host_bins", []),
         mounts=mounts,
     )

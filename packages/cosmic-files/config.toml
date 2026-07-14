@@ -1,9 +1,23 @@
 type = "app"
-needs_logind = true
+needs_logind = false
 needs_udev = false
+mount_host_libs = true
 args = ["HOME"]
-extra_packages = ["dbus", "gvfs-daemons", "gvfs-backends", "gvfs-fuse", "fuse3", "tar", "file", "less"]
+extra_packages = [
+    "dbus", "gvfs-daemons", "gvfs-backends", "gvfs-fuse", "file", "less",
+    "gstreamer1.0-plugins-base",
+    "gstreamer1.0-plugins-good",
+    "gstreamer1.0-plugins-bad",
+    "gstreamer1.0-plugins-ugly",
+    "gstreamer1.0-libav",
+    "gsettings-desktop-schemas",
+    "shared-mime-info",
+    "eog",
+    "packagekit",
+    "appstream",
+]
 groups = ["render", "video", "fuse"]
+host_bins = ["cosmic-store"]
 
 # User's home directory (file manager needs to browse files)
 [[mounts]]
@@ -46,3 +60,9 @@ options = "ro"
 host = "HOME/.local/share/Trash"
 container = "HOME/.local/share/Trash"
 options = "rw"
+
+# Appstream metadata (cosmic-store reads package info)
+[[mounts]]
+host = "/usr/share/appstream"
+container = "/usr/share/appstream"
+options = "ro"
