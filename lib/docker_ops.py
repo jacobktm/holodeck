@@ -135,9 +135,11 @@ def container_logs_follow(name):
     subprocess.run(["docker", "logs", "-f", name])
 
 
-def container_run(name, image_tag, args):
-    """Run a container with the given docker args."""
-    cmd = ["docker", "run", "-d", "--name", name] + args
+def container_run(name, image_tag, options, command=None):
+    """Run a container: docker run -d --name NAME [OPTIONS] IMAGE [COMMAND]"""
+    cmd = ["docker", "run", "-d", "--name", name] + options + [image_tag]
+    if command:
+        cmd.extend(command)
     result = run(cmd, check=False, capture=True)
     if result.returncode != 0:
         print(f"Failed to start container: {result.stderr}", file=sys.stderr)

@@ -441,7 +441,7 @@ def main():
 
     # Build docker run args and launch
     docker_args = build_docker_run_args(state, pkg_state, session_cgroup, group_add_args, nested)
-    container_run(container_name, state["image_tag"], docker_args + launch_pkgs)
+    container_run(container_name, state["image_tag"], docker_args, launch_pkgs)
 
     print("Waiting for container to start...")
     time.sleep(3)
