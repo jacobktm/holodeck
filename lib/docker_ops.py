@@ -46,21 +46,21 @@ def build_image(image_tag, packages_csv, branches_csv, force=False, nested=False
     priority = 1002
     for branch in unique:
         branch_sources += (
-            f"RUN printf 'X-Repolib-ID: popdev-{branch}\\\\n"
-            f"X-Repolib-Name: Pop Development Branch {branch}\\\\n"
-            f"Enabled: yes\\\\n"
-            f"Types: deb\\\\n"
-            f"URIs: http://apt.pop-os.org/staging/{branch}\\\\n"
-            f"Suites: noble\\\\n"
-            f"Components: main\\\\n"
-            f"Signed-By: /etc/apt/keyrings/popdev-archive-keyring.gpg\\\\n"
-            f"X-Repolib-Prefs: /etc/apt/preferences.d/pop-os-staging-{branch}\\\\n"
+            f"RUN printf 'X-Repolib-ID: popdev-{branch}\\n"
+            f"X-Repolib-Name: Pop Development Branch {branch}\\n"
+            f"Enabled: yes\\n"
+            f"Types: deb\\n"
+            f"URIs: http://apt.pop-os.org/staging/{branch}\\n"
+            f"Suites: noble\\n"
+            f"Components: main\\n"
+            f"Signed-By: /etc/apt/keyrings/popdev-archive-keyring.gpg\\n"
+            f"X-Repolib-Prefs: /etc/apt/preferences.d/pop-os-staging-{branch}\\n"
             f"' > /etc/apt/sources.list.d/popdev-{branch}.sources\n"
         )
         branch_pins += (
-            f"RUN printf 'Package: *\\\\n"
-            f"Pin: release o=pop-os-staging-{branch}\\\\n"
-            f"Pin-Priority: {priority}\\\\n"
+            f"RUN printf 'Package: *\\n"
+            f"Pin: release o=pop-os-staging-{branch}\\n"
+            f"Pin-Priority: {priority}\\n"
             f"' > /etc/apt/preferences.d/pop-os-staging-{branch}\n"
         )
         priority += 1
