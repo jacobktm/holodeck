@@ -1,0 +1,48 @@
+type = "app"
+needs_logind = true
+needs_udev = false
+args = ["HOME"]
+extra_packages = ["dbus", "gvfs-daemons", "gvfs-backends", "gvfs-fuse", "fuse3", "tar", "file", "less"]
+groups = ["render", "video", "fuse"]
+
+# User's home directory (file manager needs to browse files)
+[[mounts]]
+host = "HOME"
+container = "HOME"
+options = "rw"
+
+# COSMIC config (settings, context actions)
+[[mounts]]
+host = "HOME/.config/cosmic"
+container = "HOME/.config/cosmic"
+options = "rw"
+
+# Desktop entries (file associations, app icons)
+[[mounts]]
+host = "/usr/share/applications"
+container = "/usr/share/applications"
+options = "ro"
+
+# Icon themes
+[[mounts]]
+host = "/usr/share/icons"
+container = "/usr/share/icons"
+options = "ro"
+
+# User icons
+[[mounts]]
+host = "HOME/.local/share/icons"
+container = "HOME/.local/share/icons"
+options = "ro"
+
+# Fonts
+[[mounts]]
+host = "/usr/share/fonts"
+container = "/usr/share/fonts"
+options = "ro"
+
+# Trash (uses trash-rs crate)
+[[mounts]]
+host = "HOME/.local/share/Trash"
+container = "HOME/.local/share/Trash"
+options = "rw"

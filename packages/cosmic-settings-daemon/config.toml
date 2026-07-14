@@ -1,0 +1,28 @@
+type = "daemon"
+needs_logind = true
+needs_udev = true
+extra_packages = ["dbus", "libnm0", "wpasupplicant"]
+
+# backlight sysfs (udev monitor + reads max_brightness)
+[[mounts]]
+host = "/sys/class/backlight"
+container = "/sys/class/backlight"
+options = "ro"
+
+# network info (for display in daemon diagnostics)
+[[mounts]]
+host = "/sys/class/net"
+container = "/sys/class/net"
+options = "ro"
+
+# timezone detection (daemon watches /etc/localtime for changes)
+[[mounts]]
+host = "/etc/localtime"
+container = "/etc/localtime"
+options = "ro"
+
+# sound files (pw-play subprocess)
+[[mounts]]
+host = "/usr/share/sounds"
+container = "/usr/share/sounds"
+options = "ro"
