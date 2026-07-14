@@ -16,7 +16,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from lib.config import load_config
 from lib.docker_ops import (
     build_image, show_versions, container_state, container_pid,
-    container_rm_force, container_logs_follow, container_run,
+    container_rm_force, container_signal_exit, container_logs_follow,
+    container_run,
 )
 from lib.process import (
     cgroup_session_fix, kill_by_name_pattern, daemon_kill, daemon_restart,
@@ -283,6 +284,7 @@ def build_docker_run_args(state, pkg_state, session_cgroup, group_add_args, nest
         "-v", f"/run/dbus/system_bus_socket:/run/dbus/system_bus_socket",
         "-v", f"/run/udev:/run/udev:ro",
         "-v", f"/run/media:/run/media:rw",
+        "-v", f"/media:/media:rw",
     ]
     args.extend(base_mounts)
 

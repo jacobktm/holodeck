@@ -372,6 +372,36 @@ def container_checks(name):
     else:
         warn("GIO reports no volumes — volume detection failing")
 
+    # Check /media and /run/media mount points for permissions
+    ok, media_out = sh_ok(f"docker exec {name} ls -la /media/ 2>&1")
+    if ok and media_out:
+        info("  /media contents:")
+        for line in media_out.splitlines()[:5]:
+            info(f"    {line}")
+    else:
+        info("  /media/ not accessible or empty")
+
+    ok, runmedia_out = sh_ok(f"docker exec {name} ls -la /run/media/ 2>&1")
+    if ok and runmedia_out:
+        info("  /run/media contents:")
+        for line in runmedia_out.splitlines()[:5]:
+            info(f"    {line}")
+    else:
+        info("  /run/media/ not accessible or empty")
+
+    # Check container user
+    ok, whoami_out = sh_ok(f"docker exec {name} id 2>&1")
+    if whoami_out:
+        info(f"  Container user: {whoami_out.strip()}")
+
+    # Try to access mounted drives directly
+    for mount_dir in ["/media", "/run/media"]:
+        ok, ls_out = sh_ok(f"docker exec {name} ls -la {mount_dir}/ 2>&1")
+        if ok and ls_out:
+            for line in ls_out.splitlines():
+                if "USERNAME" in line or "root" in line or "total" in line:
+                    info(f"  {mount_dir}: {line}")
+
     # Try to mount an unmounted volume
     ok, vol_out = sh_ok(
         f"docker exec {name} gio mount -l 2>/dev/null "
