@@ -190,13 +190,29 @@ def daemon_restart(name):
 
 
 def kill_container_processes(container_name, app_names=None):
-    """Kill container via docker kill + docker rm -f.
+    """Signal entrypoint to exit, then force-remove the container.
 
-    docker kill sends SIGKILL to the entrypoint PID that Docker tracks.
-    docker rm -f force-removes the container and its network.
-    We do NOT use pkill -f on the host — it matches ALL processes and
-    would kill the user's session.
+    1. Touch /tmp/cosmic-exit inside container — entrypoint loop sees it and exits
+    2. Wait up to 3s for entrypoint to stop naturally
+    3. docker kill as fallback (SIGKILL the sleep loop)
+    4. docker rm -f to remove the container
     """
+    from lib.docker_ops import container_signal_exit
+
+    # Signal the entrypoint to exit its sleep loop
+    container_signal_exit(container_name)
+
+    # Wait for the entrypoint to exit naturally (exit trap fires, logs dumped)
+    for _ in range(30):
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+            capture_output=True, text=True, check=False,
+        )
+        if result.stdout.strip() != "true":
+            break
+        time.sleep(0.1)
+
+    # Fallback: force kill if still running
     subprocess.run(["docker", "kill", container_name],
                    capture_output=True, check=False)
     time.sleep(0.5)

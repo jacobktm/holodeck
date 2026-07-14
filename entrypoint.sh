@@ -151,11 +151,8 @@ cleanup() {
             cat "/tmp/${a}.log"
         fi
     done
-    # Kill child processes. With --pid host, daemonized processes get
-    # reparented to PID 1, so -P $$ only catches direct children.
-    # We do NOT use pkill -f here — it matches ALL host processes and
-    # would kill the user's cosmic-session. The Python orchestrator
-    # handles targeted cleanup via docker kill + docker rm -f.
+    # Kill only direct children. With --pid host, daemonized processes
+    # have already been reparented to PID 1 — we can't reach them.
     pkill -P $$ 2>/dev/null || true
     kill -- -$$ 2>/dev/null || true
     kill $$ 2>/dev/null || true
@@ -164,5 +161,14 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-echo "[entrypoint] All processes started. Press Ctrl-C to stop."
-sleep infinity
+echo "[entrypoint] All processes started. Waiting for apps to exit..."
+# Interruptible wait: check for signal file every second.
+# Orchestrator touches /tmp/cosmic-exit to trigger clean shutdown.
+while true; do
+    if [ -f /tmp/cosmic-exit ]; then
+        rm -f /tmp/cosmic-exit
+        echo "[entrypoint] Received exit signal"
+        break
+    fi
+    sleep 1
+done

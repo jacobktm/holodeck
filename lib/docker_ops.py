@@ -130,6 +130,12 @@ def container_rm_force(name):
     run(["docker", "rm", "-f", name], check=False, capture=True)
 
 
+def container_signal_exit(name):
+    """Touch the signal file inside the container to trigger clean shutdown."""
+    run(["docker", "exec", name, "touch", "/tmp/cosmic-exit"],
+        check=False, capture=True)
+
+
 def container_logs_follow(name):
     """Follow container logs. Blocks until Ctrl-C or container stops."""
     subprocess.run(["docker", "logs", "-f", name])
