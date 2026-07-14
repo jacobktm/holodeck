@@ -2,6 +2,8 @@
 set -e
 cd "$HOME" 2>/dev/null || cd /
 
+source /lib/signal.sh
+
 # ── Nested session mode ──────────────────────────────────────────────
 # If NESTED_SESSION=1, start a full COSMIC desktop session inside the
 # container. cosmic-comp runs nested (Wayland client of host compositor),
@@ -162,13 +164,4 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 echo "[entrypoint] All processes started. Waiting for apps to exit..."
-# Interruptible wait: check for signal file every second.
-# Orchestrator touches /tmp/cosmic-exit to trigger clean shutdown.
-while true; do
-    if [ -f /tmp/cosmic-exit ]; then
-        rm -f /tmp/cosmic-exit
-        echo "[entrypoint] Received exit signal"
-        break
-    fi
-    sleep 1
-done
+signal_wait

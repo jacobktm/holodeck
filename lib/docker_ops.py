@@ -70,8 +70,9 @@ def build_image(image_tag, packages_csv, branches_csv, force=False, nested=False
 ENV DEBIAN_FRONTEND=noninteractive
 
 COPY lib/popdev-archive-keyring.gpg /etc/apt/keyrings/
+COPY lib/signal.sh /lib/signal.sh
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /lib/signal.sh
 
 {branch_sources}{branch_pins}
 RUN apt-get update
