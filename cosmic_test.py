@@ -20,6 +20,7 @@ from lib.docker_ops import (
 )
 from lib.process import (
     cgroup_session_fix, kill_by_name_pattern, daemon_kill, daemon_restart,
+    kill_container_processes,
 )
 from lib.udev import udev_socket_fix
 from lib.container_status import container_status
@@ -355,8 +356,27 @@ def main():
     else:
         container_name = f"cosmic-{state['pkg_names'][0]}"
 
+    # Signal handler for clean shutdown on SIGTERM
+    def shutdown_handler(signum, frame):
+        print(f"\nReceived signal {signum}, cleaning up...")
+        kill_container_processes(container_name)
+        container_rm_force(container_name)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
     # Remove existing container on rebuild
     if state["force_rebuild"]:
+        container_rm_force(container_name)
+
+    # Clean up orphaned processes from previous runs (--pid host lets them escape)
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Pid}}", container_name],
+        capture_output=True, text=True, check=False,
+    )
+    if result.stdout.strip():
+        print(f"Cleaning up orphaned processes from previous run...")
+        kill_container_processes(container_name)
         container_rm_force(container_name)
 
     # Build image
@@ -479,7 +499,11 @@ def main():
     try:
         container_logs_follow(container_name)
     except KeyboardInterrupt:
-        pass
+        print("\nDetaching from container...")
+
+    # Kill all container processes (including daemonized ones that escaped to PID 1)
+    kill_container_processes(container_name)
+    container_rm_force(container_name)
 
     # Restart host daemons we killed
     if not nested:

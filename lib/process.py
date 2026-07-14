@@ -190,3 +190,88 @@ def daemon_restart(name):
         print(f"  {name} restarted")
     else:
         print(f"  WARN: {name} failed to restart")
+
+
+def kill_container_processes(container_name):
+    """Kill ALL processes belonging to a container using psutil.
+
+    With --pid host, daemonized processes (like cosmic-files) get reparented
+    to PID 1 and escape the entrypoint's process group. This function walks
+    the full process tree and kills anything in the container's cgroup.
+    """
+    if psutil is None:
+        # Fallback: docker kill + pkill by entrypoint path
+        subprocess.run(["docker", "kill", container_name],
+                       capture_output=True, check=False)
+        return
+
+    # Get the container's entrypoint PID from Docker
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Pid}}", container_name],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        entrypoint_pid = int(result.stdout.strip())
+    except (ValueError, AttributeError):
+        entrypoint_pid = None
+
+    if not entrypoint_pid:
+        return
+
+    # Find the container's docker cgroup
+    docker_cgroup = get_pid_cgroup(entrypoint_pid)
+    if not docker_cgroup:
+        return
+
+    print(f"Cleaning up container processes (cgroup: {docker_cgroup})...")
+
+    # Kill ALL processes in the container's cgroup
+    killed = 0
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            proc_cgroup = get_pid_cgroup(proc.pid)
+            if proc_cgroup and docker_cgroup in proc_cgroup:
+                proc.kill()
+                killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+
+    # Also kill by entrypoint PID tree (catches reparented processes)
+    try:
+        parent = psutil.Process(entrypoint_pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+                killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        parent.kill()
+        killed += 1
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
+    # Final sweep: kill any process whose cmdline matches the container's apps
+    # This catches daemonized processes that escaped to PID 1
+    result = subprocess.run(
+        ["docker", "inspect", "--format",
+         "{{.Config.Entrypoint}} {{.Config.Cmd}}", container_name],
+        capture_output=True, text=True, check=False,
+    )
+
+    # Give processes a moment to die
+    time.sleep(0.5)
+
+    # Verify cleanup
+    remaining = 0
+    for proc in psutil.process_iter(["pid"]):
+        try:
+            proc_cgroup = get_pid_cgroup(proc.pid)
+            if proc_cgroup and docker_cgroup in proc_cgroup:
+                remaining += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    if remaining:
+        print(f"  {killed} killed, {remaining} still alive (will be reaped by docker rm)")
+    else:
+        print(f"  {killed} process(es) killed")
