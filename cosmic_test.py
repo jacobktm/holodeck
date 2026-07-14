@@ -151,7 +151,7 @@ def load_package_configs(pkg_names, script_dir):
 
 
 def resolve_group_gids(groups):
-    """Resolve group names to GIDs via getent."""
+    """Resolve group names to GIDs via getent. Skip groups that don't exist."""
     args = []
     for g in groups:
         try:
@@ -163,9 +163,9 @@ def resolve_group_gids(groups):
                 gid = result.stdout.strip().split(":")[2]
                 args.extend(["--group-add", gid])
             else:
-                args.extend(["--group-add", g])
+                print(f"WARN: group '{g}' not found on host, skipping")
         except Exception:
-            args.extend(["--group-add", g])
+            print(f"WARN: group '{g}' lookup failed, skipping")
     return args
 
 
