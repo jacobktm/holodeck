@@ -1,0 +1,303 @@
+#!/bin/bash
+set -euo pipefail
+
+# ── Immutable Pop!_OS: Overlay Management CLI ──
+
+VERSION="0.1.0"
+POOL="${IMMUTABLE_POOL:-/pool}"
+BASE_SUBVOL="@base"
+DATA_SUBVOL="@data"
+SNAPSHOTS_SUBVOL="@snapshots"
+OVERLAY_PREFIX="@overlay-"
+
+# ── Helpers ──
+
+usage() {
+    cat <<EOF
+immutable v${VERSION} — Overlay management for immutable Pop!_OS
+
+Usage:
+  immutable create <name>       Create a new overlay (snapshot of @base)
+  immutable shell <name>        Chroot into an overlay
+  immutable run <name> <cmd>    Run a command in an overlay
+  immutable list                Show all overlays
+  immutable switch <name>       Set default boot overlay (needs reboot)
+  immutable reset <name>        Wipe overlay, re-snapshot from @base
+  immutable delete <name>       Remove an overlay
+  immutable status              Show current overlay and boot config
+  immutable lock                Make @base read-only (disable apt)
+  immutable unlock              Make @base writable (enable apt)
+EOF
+}
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || die "Must run as root"
+}
+
+pool_mounted() {
+    mountpoint -q "$POOL" 2>/dev/null
+}
+
+ensure_pool() {
+    require_root
+    if ! pool_mounted; then
+        # Find the BTRFS partition
+        local dev=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+        if [ -z "$dev" ]; then
+            die "Cannot determine root device. Is the system installed?"
+        fi
+        local fs_type=$(findmnt -n -o FSTYPE / 2>/dev/null || true)
+        if [ "$fs_type" != "btrfs" ]; then
+            die "Root filesystem is not BTRFS (found $fs_type)"
+        fi
+        mkdir -p "$POOL"
+        mount -o subvolid=5 "$dev" "$POOL"
+    fi
+}
+
+base_path() { echo "$POOL/$BASE_SUBVOL"; }
+overlay_path() { echo "$POOL/$OVERLAY_PREFIX$1"; }
+data_path() { echo "$POOL/$DATA_SUBVOL"; }
+snapshots_path() { echo "$POOL/$SNAPSHOTS_SUBVOL"; }
+
+# ── Commands ──
+
+cmd_create() {
+    local name="${1:?Usage: immutable create <name>}"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] && die "Overlay '$name' already exists"
+
+    local src=$(base_path)
+    [ -d "$src" ] || die "Base system not found at $src"
+
+    echo "Creating overlay '$name' from @base..."
+    btrfs subvolume snapshot "$src" "$dst"
+    echo "Created: $dst"
+    echo ""
+    echo "Next steps:"
+    echo "  immutable shell $name      # enter overlay"
+    echo "  immutable switch $name     # set as boot default (needs reboot)"
+}
+
+cmd_shell() {
+    local name="${1:?Usage: immutable shell <name>}"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] || die "Overlay '$name' not found. Use 'immutable list' to see available overlays."
+
+    echo "Entering overlay '$name'..."
+    _chroot_overlay "$dst"
+}
+
+cmd_run() {
+    local name="${1:?Usage: immutable run <name> <cmd>}"
+    shift
+    [ $# -eq 0 ] && die "No command specified"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] || die "Overlay '$name' not found"
+
+    _chroot_overlay "$dst" "$@"
+}
+
+cmd_list() {
+    ensure_pool
+
+    echo "Overlays:"
+    echo ""
+
+    # Show base
+    local base=$(base_path)
+    if [ -d "$base" ]; then
+        local ro=$(btrfs property get "$base" ro 2>/dev/null | cut -d' ' -f2)
+        echo "  @base (read-only: $ro) — $base"
+    fi
+
+    # Show overlays
+    local count=0
+    for d in "$POOL"/$OVERLAY_PREFIX*; do
+        [ -d "$d" ] || continue
+        local name=$(basename "$d" | sed "s/^$OVERLAY_PREFIX//")
+        local size=$(du -sh "$d" 2>/dev/null | cut -f1)
+        echo "  $name ($size) — $d"
+        count=$((count + 1))
+    done
+    [ "$count" -eq 0 ] && echo "  (none)"
+
+    # Show data
+    local data=$(data_path)
+    if [ -d "$data" ]; then
+        echo ""
+        echo "  @data — $data"
+    fi
+
+    # Show current boot overlay
+    echo ""
+    _show_boot_config
+}
+
+cmd_switch() {
+    local name="${1:?Usage: immutable switch <name>}"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] || die "Overlay '$name' not found"
+
+    # Update boot entry
+    local entry="/boot/loader/entries/immutable.conf"
+    if [ -f "$entry" ]; then
+        sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-${name}|g" "$entry"
+        echo "Boot entry updated to: @overlay-${name}"
+        echo "Reboot to activate."
+    else
+        echo "Boot entry not found at $entry"
+        echo "Manually set rootflags=subvol=@overlay-${name} in your boot config."
+    fi
+}
+
+cmd_reset() {
+    local name="${1:?Usage: immutable reset <name>}"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] || die "Overlay '$name' not found"
+
+    local src=$(base_path)
+
+    echo "Resetting overlay '$name' from @base..."
+    btrfs subvolume delete "$dst"
+    btrfs subvolume snapshot "$src" "$dst"
+    echo "Reset complete: $dst"
+}
+
+cmd_delete() {
+    local name="${1:?Usage: immutable delete <name>}"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] || die "Overlay '$name' not found"
+
+    # Don't delete the active boot overlay
+    local current=$(cat /boot/loader/entries/immutable.conf 2>/dev/null | grep -o 'subvol=[^ ]*' | cut -d= -f2 || true)
+    if [ "$current" = "@overlay-${name}" ]; then
+        die "Cannot delete active boot overlay. Switch to another first."
+    fi
+
+    echo "Deleting overlay '$name'..."
+    btrfs subvolume delete "$dst"
+    echo "Deleted."
+}
+
+cmd_status() {
+    ensure_pool
+    echo "=== Immutable Status ==="
+    echo ""
+    _show_boot_config
+    echo ""
+    echo "=== Subvolumes ==="
+    btrfs subvolume list "$POOL" 2>/dev/null || echo "(unable to list)"
+}
+
+cmd_lock() {
+    ensure_pool
+    local base=$(base_path)
+    [ -d "$base" ] || die "Base system not found"
+
+    echo "Making @base read-only..."
+    btrfs property set "$base" ro true
+    echo "@base is now read-only. Use 'immutable unlock' to make writable."
+}
+
+cmd_unlock() {
+    ensure_pool
+    local base=$(base_path)
+    [ -d "$base" ] || die "Base system not found"
+
+    echo "Making @base writable..."
+    btrfs property set "$base" ro false
+    echo "@base is now writable. Run apt update/upgrade as needed."
+    echo "Use 'immutable lock' when done."
+}
+
+# ── Internal functions ──
+
+_chroot_overlay() {
+    local root="$1"
+    shift
+
+    # Mount API filesystems
+    mkdir -p "$root"/{dev,dev/pts,proc,sys,run,tmp}
+    mount --bind /dev "$root/dev" 2>/dev/null || true
+    mount --bind /dev/pts "$root/dev/pts" 2>/dev/null || true
+    mount -t proc proc "$root/proc" 2>/dev/null || true
+    mount --rbind /sys "$root/sys" 2>/dev/null || true
+    mount --make-rslave "$root/sys" 2>/dev/null || true
+    mount --bind /run "$root/run" 2>/dev/null || true
+    mount --bind /tmp "$root/tmp" 2>/dev/null || true
+
+    # Mount data partition into home
+    local data=$(data_path)
+    if [ -d "$data" ]; then
+        local home_dir="$root/home/USERNAME"
+        mkdir -p "$home_dir"
+        for dir in Documents Downloads Pictures Videos Music; do
+            mkdir -p "$home_dir/$dir"
+            mount --bind "$data/$dir" "$home_dir/$dir" 2>/dev/null || true
+        done
+    fi
+
+    # DNS resolution
+    cp /etc/resolv.conf "$root/etc/resolv.conf" 2>/dev/null || true
+
+    # Enter chroot
+    if [ $# -gt 0 ]; then
+        chroot "$root" "$@"
+    else
+        chroot "$root" /bin/bash
+    fi
+
+    # Cleanup mounts
+    umount -R "$root/dev" 2>/dev/null || true
+    umount -R "$root/proc" 2>/dev/null || true
+    umount -R "$root/sys" 2>/dev/null || true
+    umount "$root/run" 2>/dev/null || true
+    umount "$root/tmp" 2>/dev/null || true
+    umount "$root/home/USERNAME/Documents" 2>/dev/null || true
+    umount "$root/home/USERNAME/Downloads" 2>/dev/null || true
+    umount "$root/home/USERNAME/Pictures" 2>/dev/null || true
+    umount "$root/home/USERNAME/Videos" 2>/dev/null || true
+    umount "$root/home/USERNAME/Music" 2>/dev/null || true
+}
+
+_show_boot_config() {
+    local entry="/boot/loader/entries/immutable.conf"
+    if [ -f "$entry" ]; then
+        local subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
+        echo "Boot overlay: ${subvol:-unknown}"
+    else
+        echo "Boot config: not found (system not installed?)"
+    fi
+}
+
+# ── Main ──
+
+case "${1:-}" in
+    create)  shift; cmd_create "$@" ;;
+    shell)   shift; cmd_shell "$@" ;;
+    run)     shift; cmd_run "$@" ;;
+    list)    shift; cmd_list "$@" ;;
+    switch)  shift; cmd_switch "$@" ;;
+    reset)   shift; cmd_reset "$@" ;;
+    delete)  shift; cmd_delete "$@" ;;
+    status)  shift; cmd_status "$@" ;;
+    lock)    shift; cmd_lock "$@" ;;
+    unlock)  shift; cmd_unlock "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) die "Unknown command: $1 (try 'immutable help')" ;;
+esac
