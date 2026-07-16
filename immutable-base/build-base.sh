@@ -2,30 +2,52 @@
 set -euo pipefail
 
 # ── Build immutable Pop!_OS base rootfs ──
+# Follows pop-os/iso build patterns for repo setup and package installation
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 DISTRO="noble"
 MIRROR="http://apt.pop-os.org/ubuntu"
 ARCH="amd64"
 BUILD_DIR="${BUILD_DIR:-/tmp/immutable-build}"
 ROOTFS_DIR="$BUILD_DIR/rootfs"
-OUTPUT="$BUILD_DIR/base-rootfs.tar.zst"
 
-# ── Packages ──
+# Pop!_OS repo URIs and keys (matching iso/config/pop-os/*.mk)
+RELEASE_URI="http://apt.pop-os.org/release"
+APPS_URI="http://apt.pop-os.org/proprietary"
+POP_KEY="/etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg"
+UBUNTU_KEY="/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"
 
-BASE_PKGS="systemd-sysv init dbus sudo network-manager"
-COSMIC_PKGS="cosmic cosmic-term pop-desktop"
-KERNEL_PKGS="linux-system76 linux-headers-system76"
-DRIVER_PKGS="system76-driver system76-power"
+# ── Package lists (matching iso/config/pop-os/22.04.mk structure) ──
+
+# Base packages — minimal desktop session, no hardware-specific packages
+DISTRO_PKGS="systemd-sysv init dbus sudo network-manager \
+    cosmic-session cosmic-term"
+
+# Utilities
 UTIL_PKGS="btrfs-progs vim less git curl wget htop"
-LIVE_PKGS="casper pop-installer"
 
-ALL_PKGS="$BASE_PKGS $COSMIC_PKGS $KERNEL_PKGS $DRIVER_PKGS $UTIL_PKGS"
+# Packages to remove (from iso/config/pop-os/22.04.mk)
+RM_PKGS="snapd ubuntu-session ubuntu-wallpapers"
 
 # ── Helpers ──
 
+cleanup() {
+    umount -R "$ROOTFS_DIR/dev" 2>/dev/null || true
+    umount -R "$ROOTFS_DIR/proc" 2>/dev/null || true
+    umount -R "$ROOTFS_DIR/sys" 2>/dev/null || true
+    umount "$ROOTFS_DIR/run" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ""; echo "══════════════════════════════════════"; echo " $1"; echo "══════════════════════════════════════"; echo ""; }
+
+# Check for apt-cacher-ng proxy
+APT_PROXY=""
+if ping -c 1 -W 2 PROXY_HOST &>/dev/null; then
+    APT_PROXY="http://PROXY_HOST:3142"
+    echo "APT proxy detected: $APT_PROXY"
+fi
 
 usage() {
     cat <<EOF
@@ -37,24 +59,22 @@ Usage:
 Options:
   --mirror URL       APT mirror (default: $MIRROR)
   --distro NAME      Ubuntu codename (default: $DISTRO)
-  --output PATH      Output tarball path (default: $OUTPUT)
-  --live             Include live ISO packages (casper, installer)
+  --output PATH      Output tarball path
   --help             Show this help
 
 Output:
-  $OUTPUT — Compressed rootfs tarball
+  $BUILD_DIR/base-rootfs.tar.zst (base image)
 EOF
 }
 
 # ── Parse args ──
 
-INCLUDE_LIVE=0
+OUTPUT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --mirror) MIRROR="$2"; shift 2 ;;
         --distro) DISTRO="$2"; shift 2 ;;
         --output) OUTPUT="$2"; shift 2 ;;
-        --live) INCLUDE_LIVE=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -62,166 +82,233 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "Must run as root"
 
-if [ "$INCLUDE_LIVE" -eq 1 ]; then
-    ALL_PKGS="$ALL_PKGS $LIVE_PKGS"
-fi
+# ── Repo setup (following pop-os/iso repos.sh pattern) ──
 
-# ── Step 1: debootstrap ──
+create_sources_file() {
+    # Create a .sources file in DEB822 format
+    # Usage: create_sources_file <filename> <name> <types> <uris> <suites> <components> [signed-by]
+    local filename="$1" name="$2" types="$3" uris="$4" suites="$5" components="$6" signed_by="${7:-}"
+
+    cat > "$ROOTFS_DIR/etc/apt/sources.list.d/$filename" <<SOURCES
+X-Repolib-Name: ${name}
+Enabled: yes
+Types: ${types}
+URIs: ${uris}
+Suites: ${suites}
+Components: ${components}
+SOURCES
+
+    if [ -n "$signed_by" ]; then
+        echo "Signed-By: ${signed_by}" >> "$ROOTFS_DIR/etc/apt/sources.list.d/$filename"
+    fi
+}
+
+# ── Chroot functions ──
+
+setup_chroot() {
+    mount --bind /dev "$ROOTFS_DIR/dev"
+    mount --bind /dev/pts "$ROOTFS_DIR/dev/pts"
+    mount -t proc proc "$ROOTFS_DIR/proc"
+    mount --rbind /sys "$ROOTFS_DIR/sys"
+    mount --make-rslave "$ROOTFS_DIR/sys"
+    mount --bind /run "$ROOTFS_DIR/run"
+}
+
+teardown_chroot() {
+    umount -R "$ROOTFS_DIR/dev" 2>/dev/null || true
+    umount -R "$ROOTFS_DIR/proc" 2>/dev/null || true
+    umount -R "$ROOTFS_DIR/sys" 2>/dev/null || true
+    umount "$ROOTFS_DIR/run" 2>/dev/null || true
+}
+
+run_in_chroot() {
+    # Run a command in chroot with proper environment
+    chroot "$ROOTFS_DIR" /bin/bash -e -c "$1"
+}
+
+configure_rootfs_apt() {
+    # DNS (matching iso/scripts/chroot.sh)
+    mkdir -p "$ROOTFS_DIR/run/systemd/resolve"
+    echo "nameserver 1.1.1.1" > "$ROOTFS_DIR/run/systemd/resolve/stub-resolv.conf"
+    ln -sf ../run/systemd/resolve/stub-resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
+
+    # Set up clean APT sources
+    mkdir -p "$ROOTFS_DIR/etc/apt/sources.list.d" "$ROOTFS_DIR/etc/apt/trusted.gpg.d"
+
+    # Copy GPG keys from host
+    cp /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg "$ROOTFS_DIR/etc/apt/trusted.gpg.d/"
+    cp /etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg "$ROOTFS_DIR/etc/apt/trusted.gpg.d/" 2>/dev/null || true
+
+    # APT proxy
+    if [ -n "$APT_PROXY" ]; then
+        mkdir -p "$ROOTFS_DIR/etc/apt/apt.conf.d"
+        echo "Acquire::http::Proxy \"$APT_PROXY\";" > "$ROOTFS_DIR/etc/apt/apt.conf.d/99proxy"
+    fi
+
+    # Keep debootstrap's sources.list for initial installs
+    # (needed for ca-certificates before DEB822 repos are available)
+}
+
+configure_rootfs_repos() {
+    # Now that ca-certificates is installed, switch to DEB822 format repos
+    # Truncate sources.list (matching iso pattern)
+    truncate --size=0 "$ROOTFS_DIR/etc/apt/sources.list"
+
+    # Create DEB822 format repos (matching iso/config/pop-os/22.04.mk)
+    # system.sources — Ubuntu mirror
+    create_sources_file "system.sources" \
+        "Pop_OS System Sources" \
+        "deb deb-src" \
+        "$MIRROR" \
+        "$DISTRO $DISTRO-security $DISTRO-updates $DISTRO-backports" \
+        "main restricted universe multiverse" \
+        "$UBUNTU_KEY"
+
+    # Pop!_OS release sources
+    create_sources_file "pop-os-release.sources" \
+        "Pop_OS Release Sources" \
+        "deb deb-src" \
+        "$RELEASE_URI" \
+        "$DISTRO" \
+        "main" \
+        "$POP_KEY"
+
+    # Note: pop-default-settings creates pop-os-apps.sources itself
+    # Don't create it here — it expects a hardcoded filename
+}
+
+configure_rootfs_system() {
+    # Kernelstub configuration (matching iso/data/amd64/kernelstub)
+    mkdir -p "$ROOTFS_DIR/etc/kernelstub"
+    cat > "$ROOTFS_DIR/etc/kernelstub/configuration" <<'KERNELSTUB'
+{
+    "extensions": {
+        "initrd": {
+            "systemd": true
+        }
+    },
+    "kernel": {
+        "copy_default": true,
+        "replace_default": false,
+        "cmdline": [
+            "quiet"
+        ]
+    },
+    "esp": {
+        "path": "/boot/efi",
+        "mount_point": "/boot/efi"
+    },
+    "initrd": {
+        "microcode": true,
+        "modules": [],
+        "cleanup": true
+    },
+    "update": {
+        "refresh": true,
+        "auto_refresh": false
+    }
+}
+KERNELSTUB
+
+    # Hostname
+    echo "immutable" > "$ROOTFS_DIR/etc/hostname"
+
+    # Locale
+    echo "en_US.UTF-8 UTF-8" > "$ROOTFS_DIR/etc/locale.gen"
+    chroot "$ROOTFS_DIR" locale-gen 2>/dev/null || true
+
+    # Timezone
+    ln -sf /usr/share/zoneinfo/UTC "$ROOTFS_DIR/etc/localtime"
+
+    # Root password (user created during install)
+    echo "root:root" | chroot "$ROOTFS_DIR" chpasswd
+    echo "ALL ALL=(ALL) NOPASSWD: ALL" > "$ROOTFS_DIR/etc/sudoers.d/nopasswd"
+
+    # Enable services
+    chroot "$ROOTFS_DIR" systemctl enable NetworkManager 2>/dev/null || true
+    chroot "$ROOTFS_DIR" systemctl enable dbus 2>/dev/null || true
+}
+
+install_base_packages() {
+    # ca-certificates first (needed for HTTPS)
+    echo "Installing ca-certificates..."
+    run_in_chroot "apt-get update -o Dir::Etc::sourceparts=/dev/null"
+    run_in_chroot "apt-get install -y ca-certificates"
+
+    # Now switch to DEB822 format repos
+    configure_rootfs_repos
+
+    # Update and upgrade (matching chroot.sh pattern)
+    echo "Updating package lists..."
+    run_in_chroot "apt-get update -y"
+    run_in_chroot "apt-get upgrade -y --allow-downgrades"
+
+    # Install base packages (kernel postinst will fail in chroot — no block device)
+    echo "Installing base packages..."
+    run_in_chroot "apt-get install -y $DISTRO_PKGS" || true
+    run_in_chroot "dpkg --configure -a" || true
+
+    # Install utilities
+    echo "Installing utilities..."
+    run_in_chroot "apt-get install -y $UTIL_PKGS"
+
+    # Remove unwanted packages (matching iso RM_PKGS)
+    echo "Removing unwanted packages..."
+    run_in_chroot "apt-get purge -y $RM_PKGS" || true
+
+    # Cleanup
+    run_in_chroot "apt-get autoremove --purge -y"
+    run_in_chroot "apt-get clean -y"
+
+    # Remove temporary files
+    rm -rf "$ROOTFS_DIR"/{tmp/*,var/tmp/*,var/cache/apt/archives/*.deb}
+}
+
+package_rootfs() {
+    local output="$1"
+    echo "Creating compressed tarball: $output"
+    tar -C "$ROOTFS_DIR" -cf - . | zstd -T0 -19 -o "$output"
+    local size
+    size=$(du -sh "$output" | cut -f1)
+    echo "  Size: $size"
+}
+
+# ── Main build logic ──
+
+BASE_OUTPUT="$BUILD_DIR/base-rootfs.tar.zst"
+
+if [ -n "$OUTPUT" ]; then
+    BASE_OUTPUT="$OUTPUT"
+fi
 
 info "Step 1: Creating rootfs with debootstrap"
 
-mkdir -p "$BUILD_DIR"
-rm -rf "$ROOTFS_DIR"
+    mkdir -p "$BUILD_DIR"
+    rm -rf "$ROOTFS_DIR"
 
-# Copy host APT sources and keys for debootstrap
-TEMP_APT="$BUILD_DIR/apt"
-mkdir -p "$TEMP_APT/sources.list.d" "$TEMP_APT/keyrings"
+    debootstrap \
+        --arch="$ARCH" \
+        --include="systemd-sysv init dbus sudo btrfs-progs" \
+        --variant=minbase \
+        "$DISTRO" \
+        "$ROOTFS_DIR" \
+        "$MIRROR"
 
-# Copy host sources
-for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
-    [ -f "$f" ] && cp "$f" "$TEMP_APT/sources.list.d/" 2>/dev/null || true
-done
+    info "Step 2: Configuring rootfs"
 
-# Copy GPG keys
-for f in /etc/apt/trusted.gpg /etc/apt/trusted.gpg.d/*.gpg /etc/apt/keyrings/*.gpg; do
-    [ -f "$f" ] && cp "$f" "$TEMP_APT/keyrings/" 2>/dev/null || true
-done
+    configure_rootfs_apt
+    setup_chroot
 
-# Create debootstrap hook to copy APT config into rootfs
-cat > "$BUILD_DIR/01-copy-apt.sh" <<'HOOK'
-#!/bin/sh
-# Copy host APT sources into debootstrap
-cp /tmp/apt-setup/sources.list.d/* /rootfs/etc/apt/sources.list.d/ 2>/dev/null || true
-cp /tmp/apt-setup/keyrings/* /rootfs/etc/apt/keyrings/ 2>/dev/null || true
-HOOK
-chmod +x "$BUILD_DIR/01-copy-apt.sh"
+    install_base_packages
+    configure_rootfs_system
 
-# Run debootstrap with minimal packages only
-# Pop!_OS packages and network-manager will be installed in chroot
-# to avoid dependency chain issues (polkitd needs logind)
-debootstrap \
-    --arch="$ARCH" \
-    --include="systemd-sysv init dbus sudo btrfs-progs" \
-    --variant=minbase \
-    "$DISTRO" \
-    "$ROOTFS_DIR" \
-    "$MIRROR"
+    teardown_chroot
 
-# ── Step 2: Configure the rootfs ──
+    info "Step 3: Packaging base rootfs"
+    package_rootfs "$BASE_OUTPUT"
 
-info "Step 2: Configuring rootfs"
-
-# Mount API filesystems for chroot
-mount --bind /dev "$ROOTFS_DIR/dev"
-mount --bind /dev/pts "$ROOTFS_DIR/dev/pts"
-mount -t proc proc "$ROOTFS_DIR/proc"
-mount --rbind /sys "$ROOTFS_DIR/sys"
-mount --make-rslave "$ROOTFS_DIR/sys"
-mount --bind /run "$ROOTFS_DIR/run"
-
-# DNS
-cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
-
-# Set up clean APT sources (no host third-party repos)
-mkdir -p "$ROOTFS_DIR/etc/apt/sources.list.d" "$ROOTFS_DIR/etc/apt/keyrings"
-
-# Ubuntu base repos
-cat > "$ROOTFS_DIR/etc/apt/sources.list" <<SOURCES
-deb $MIRROR $DISTRO main restricted universe multiverse
-deb $MIRROR $DISTRO-updates main restricted universe multiverse
-deb $MIRROR $DISTRO-security main restricted universe multiverse
-deb $MIRROR $DISTRO-backports main restricted universe multiverse
-SOURCES
-
-# Pop!_OS release and proprietary repos
-cat > "$ROOTFS_DIR/etc/apt/sources.list.d/pop-os.sources" <<POP
-Types: deb
-URIs: http://apt.pop-os.org/release
-Suites: $DISTRO
-Components: main
-Signed-By: /etc/apt/keyrings/pop-os-archive-keyring.gpg
-
-Types: deb
-URIs: http://apt.pop-os.org/proprietary
-Suites: $DISTRO
-Components: main
-Signed-By: /etc/apt/keyrings/pop-os-archive-keyring.gpg
-POP
-
-# Install ca-certificates first (needed for HTTPS)
-echo "Installing ca-certificates..."
-chroot "$ROOTFS_DIR" apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list
-chroot "$ROOTFS_DIR" apt-get install -y ca-certificates
-
-# Import Pop!_OS GPG key
-echo "Importing Pop!_OS GPG key..."
-mkdir -p "$ROOTFS_DIR/etc/apt/keyrings"
-curl -fsSL https://raw.githubusercontent.com/pop-os/pop/master/sig/pop-os-archive-keyring.gpg \
-    -o "$ROOTFS_DIR/etc/apt/keyrings/pop-os-archive-keyring.gpg"
-
-# Update APT and install packages in dependency order
-echo "Installing packages..."
-chroot "$ROOTFS_DIR" apt-get update
-
-# First: logind (provides default-logind, needed by polkitd)
-echo "  Installing systemd-logind..."
-chroot "$ROOTFS_DIR" apt-get install -y libpam-systemd
-
-# Second: polkitd and network-manager (depend on logind)
-echo "  Installing polkitd and network-manager..."
-chroot "$ROOTFS_DIR" apt-get install -y polkitd network-manager
-
-# Third: COSMIC desktop and Pop!_OS packages
-echo "  Installing COSMIC desktop..."
-chroot "$ROOTFS_DIR" apt-get install -y --allow-downgrades \
-    cosmic cosmic-term pop-desktop \
-    linux-system76 linux-headers-system76 \
-    system76-driver system76-power
-
-# Fourth: utilities
-echo "  Installing utilities..."
-chroot "$ROOTFS_DIR" apt-get install -y vim less git curl wget htop
-
-# Hostname
-echo "immutable" > "$ROOTFS_DIR/etc/hostname"
-
-# Locale
-echo "en_US.UTF-8 UTF-8" > "$ROOTFS_DIR/etc/locale.gen"
-chroot "$ROOTFS_DIR" locale-gen 2>/dev/null || true
-
-# Timezone
-ln -sf /usr/share/zoneinfo/UTC "$ROOTFS_DIR/etc/localtime"
-
-# Users
-chroot "$ROOTFS_DIR" useradd -m -s /bin/bash -G sudo USERNAME2>/dev/null || true
-echo "USERNAME:CHANGEME" | chroot "$ROOTFS_DIR" chpasswd
-echo "root:root" | chroot "$ROOTFS_DIR" chpasswd
-echo "ALL ALL=(ALL) NOPASSWD: ALL" > "$ROOTFS_DIR/etc/sudoers.d/nopasswd"
-
-# Enable services
-chroot "$ROOTFS_DIR" systemctl enable NetworkManager 2>/dev/null || true
-chroot "$ROOTFS_DIR" systemctl enable dbus 2>/dev/null || true
-
-# Clean up
-umount -R "$ROOTFS_DIR/dev" 2>/dev/null || true
-umount -R "$ROOTFS_DIR/proc" 2>/dev/null || true
-umount -R "$ROOTFS_DIR/sys" 2>/dev/null || true
-umount "$ROOTFS_DIR/run" 2>/dev/null || true
-
-# ── Step 3: Package rootfs ──
-
-info "Step 3: Packaging rootfs"
-
-# Remove unnecessary files to reduce size
-rm -rf "$ROOTFS_DIR"/{tmp/*,var/tmp/*,var/cache/apt/archives/*.deb}
-
-echo "Creating compressed tarball: $OUTPUT"
-tar -C "$ROOTFS_DIR" -cf - . | zstd -T0 -19 -o "$OUTPUT"
-
-SIZE=$(du -sh "$OUTPUT" | cut -f1)
 echo ""
 echo "Build complete!"
-echo "  Output: $OUTPUT"
-echo "  Size: $SIZE"
+echo "  Output: $BASE_OUTPUT"
 echo ""
-echo "Next: ./install.sh to install to disk"
+echo "Next: ./install.sh --device /dev/sdX to install to disk"

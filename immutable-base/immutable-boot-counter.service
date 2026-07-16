@@ -1,0 +1,13 @@
+[Unit]
+Description=Immutable boot counter — check for failed boots
+DefaultDependencies=no
+After=local-fs.target
+Before=immutable-healthcheck.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/immutable-boot-counter.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

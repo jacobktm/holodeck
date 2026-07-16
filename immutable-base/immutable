@@ -3,14 +3,45 @@ set -euo pipefail
 
 # ── Immutable Pop!_OS: Overlay Management CLI ──
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 POOL="${IMMUTABLE_POOL:-/pool}"
 BASE_SUBVOL="@base"
 DATA_SUBVOL="@data"
 SNAPSHOTS_SUBVOL="@snapshots"
 OVERLAY_PREFIX="@overlay-"
+RECOVERY_OVERLAY="recovery"
+BOOT_COUNTER="$POOL/$DATA_SUBVOL/boot-counter"
+BOOT_OK_MARKER="$POOL/$DATA_SUBVOL/boot-ok"
+BOOT_THRESHOLD=3
+
+# If @data has its own copy of this script, run that instead.
+# This lets users update the CLI once in @data and have all overlays see it.
+_DATA_SCRIPT="$POOL/$DATA_SUBVOL/immutable"
+if [ "$0" != "$_DATA_SCRIPT" ] && [ -f "$_DATA_SCRIPT" ] && [ -x "$_DATA_SCRIPT" ]; then
+    exec "$_DATA_SCRIPT" "$@"
+fi
 
 # ── Helpers ──
+
+IMMUTABLE_CONF="/etc/immutable.conf"
+
+get_username() {
+    if [ -f "$IMMUTABLE_CONF" ]; then
+        local user
+        user=$(grep '^USERNAME=' "$IMMUTABLE_CONF" | cut -d= -f2)
+        [ -n "$user" ] && echo "$user" && return
+    fi
+    # Fallback: find first non-root user in /home
+    local user
+    for d in /home/*; do
+        [ -d "$d" ] || continue
+        user=$(basename "$d")
+        [ "$user" = "root" ] && continue
+        echo "$user"
+        return
+    done
+    echo "USERNAME"  # last resort
+}
 
 usage() {
     cat <<EOF
@@ -27,6 +58,11 @@ Usage:
   immutable status              Show current overlay and boot config
   immutable lock                Make @base read-only (disable apt)
   immutable unlock              Make @base writable (enable apt)
+  immutable recovery            Switch to recovery overlay and reboot
+  immutable reset-recovery      Recreate recovery overlay from @base
+  immutable healthcheck         Check boot health (called by systemd)
+  immutable boot-ok             Mark current boot as healthy
+  immutable update              Update CLI in @data (all overlays see it)
 EOF
 }
 
@@ -54,6 +90,13 @@ ensure_pool() {
         fi
         mkdir -p "$POOL"
         mount -o subvolid=5 "$dev" "$POOL"
+    fi
+}
+
+check_pool() {
+    # Like ensure_pool but doesn't require root — just verifies pool is accessible
+    if ! pool_mounted; then
+        die "Pool not mounted at $POOL. Run as root or check fstab."
     fi
 }
 
@@ -107,7 +150,7 @@ cmd_run() {
 }
 
 cmd_list() {
-    ensure_pool
+    check_pool
 
     echo "Overlays:"
     echo ""
@@ -115,19 +158,26 @@ cmd_list() {
     # Show base
     local base=$(base_path)
     if [ -d "$base" ]; then
-        local ro=$(btrfs property get "$base" ro 2>/dev/null | cut -d' ' -f2)
+        local ro=$(btrfs property get "$base" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
         echo "  @base (read-only: $ro) — $base"
     fi
 
-    # Show overlays
+    # Show overlays (use btrfs subvolume list to avoid glob issues with @ in names)
     local count=0
-    for d in "$POOL"/$OVERLAY_PREFIX*; do
-        [ -d "$d" ] || continue
-        local name=$(basename "$d" | sed "s/^$OVERLAY_PREFIX//")
-        local size=$(du -sh "$d" 2>/dev/null | cut -f1)
-        echo "  $name ($size) — $d"
-        count=$((count + 1))
-    done
+    local list_output
+    list_output=$(btrfs subvolume list "$POOL" 2>/dev/null || true)
+    while IFS= read -r line; do
+        local path=$(echo "$line" | grep -oP 'path \K.*')
+        case "$path" in
+            @overlay-*)
+                local name="${path#@overlay-}"
+                local full="$POOL/$path"
+                local size=$(du -sh "$full" 2>/dev/null | cut -f1)
+                echo "  $name ($size) — $full"
+                count=$((count + 1))
+                ;;
+        esac
+    done <<< "$list_output"
     [ "$count" -eq 0 ] && echo "  (none)"
 
     # Show data
@@ -144,21 +194,9 @@ cmd_list() {
 
 cmd_switch() {
     local name="${1:?Usage: immutable switch <name>}"
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] || die "Overlay '$name' not found"
-
-    # Update boot entry
-    local entry="/boot/loader/entries/immutable.conf"
-    if [ -f "$entry" ]; then
-        sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-${name}|g" "$entry"
-        echo "Boot entry updated to: @overlay-${name}"
-        echo "Reboot to activate."
-    else
-        echo "Boot entry not found at $entry"
-        echo "Manually set rootflags=subvol=@overlay-${name} in your boot config."
-    fi
+    require_root
+    _switch_to "$name"
+    echo "Reboot to activate."
 }
 
 cmd_reset() {
@@ -184,7 +222,7 @@ cmd_delete() {
     [ -d "$dst" ] || die "Overlay '$name' not found"
 
     # Don't delete the active boot overlay
-    local current=$(cat /boot/loader/entries/immutable.conf 2>/dev/null | grep -o 'subvol=[^ ]*' | cut -d= -f2 || true)
+    local current=$(cat /boot/efi/loader/entries/immutable.conf 2>/dev/null | grep -o 'subvol=[^ ]*' | head -1 | cut -d= -f2 || true)
     if [ "$current" = "@overlay-${name}" ]; then
         die "Cannot delete active boot overlay. Switch to another first."
     fi
@@ -195,7 +233,7 @@ cmd_delete() {
 }
 
 cmd_status() {
-    ensure_pool
+    check_pool
     echo "=== Immutable Status ==="
     echo ""
     _show_boot_config
@@ -225,11 +263,127 @@ cmd_unlock() {
     echo "Use 'immutable lock' when done."
 }
 
+cmd_recovery() {
+    require_root
+
+    local recovery=$(overlay_path "$RECOVERY_OVERLAY")
+    if [ ! -d "$recovery" ]; then
+        echo "Recovery overlay not found. Creating from @base..."
+        ensure_pool
+        btrfs subvolume snapshot "$(base_path)" "$recovery"
+    fi
+
+    echo "Switching to recovery overlay..."
+    _switch_to "$RECOVERY_OVERLAY"
+
+    echo "Rebooting into recovery..."
+    reboot
+}
+
+cmd_reset_recovery() {
+    ensure_pool
+    local recovery=$(overlay_path "$RECOVERY_OVERLAY")
+    local src=$(base_path)
+
+    if [ -d "$recovery" ]; then
+        echo "Deleting old recovery overlay..."
+        btrfs subvolume delete "$recovery"
+    fi
+
+    echo "Creating recovery overlay from @base..."
+    btrfs subvolume snapshot "$src" "$recovery"
+    echo "Recovery overlay created: $recovery"
+}
+
+cmd_healthcheck() {
+    # Run as a systemd service. Exit 0 = healthy, exit 1 = unhealthy.
+    # Check that essential services can be reached.
+    local healthy=true
+
+    # Check if / is writable (overlay is working)
+    if ! touch /.healthcheck-test 2>/dev/null; then
+        echo "FAIL: root filesystem not writable"
+        healthy=false
+    fi
+    rm -f /.healthcheck-test 2>/dev/null
+
+    # Check that systemd is functioning
+    if ! systemctl is-system-running --quiet 2>/dev/null; then
+        local state=$(systemctl is-system-running 2>/dev/null || echo "unknown")
+        if [ "$state" = "degraded" ]; then
+            echo "WARN: systemd in degraded state (non-fatal)"
+        elif [ "$state" = "maintenance" ]; then
+            echo "FAIL: systemd in maintenance mode"
+            healthy=false
+        fi
+    fi
+
+    if $healthy; then
+        echo "Boot healthcheck: PASS"
+        exit 0
+    else
+        echo "Boot healthcheck: FAIL"
+        exit 1
+    fi
+}
+
+cmd_boot_ok() {
+    # Mark current boot as healthy — reset boot counter
+    check_pool
+    local data=$(data_path)
+    mkdir -p "$data" 2>/dev/null || true
+
+    echo "1" > "$BOOT_OK_MARKER" 2>/dev/null || true
+    echo "0" > "$BOOT_COUNTER" 2>/dev/null || true
+    echo "Boot marked as healthy."
+}
+
+cmd_update() {
+    # Copy this script to @data so all overlays use the updated version
+    require_root
+    check_pool
+
+    local data=$(data_path)
+    mkdir -p "$data" 2>/dev/null || true
+
+    local dest="$data/immutable"
+    local src="$0"
+
+    # If running from @data (the exec redirect), use the shim at /usr/local/bin
+    if [ "$src" = "$dest" ]; then
+        src="/usr/local/bin/immutable"
+    fi
+
+    cp "$src" "$dest"
+    chmod +x "$dest"
+    echo "CLI updated in @data. All overlays will use this version."
+}
+
 # ── Internal functions ──
+
+_switch_to() {
+    local name="${1:?Usage: immutable switch <name>}"
+    ensure_pool
+
+    local dst=$(overlay_path "$name")
+    [ -d "$dst" ] || die "Overlay '$name' not found"
+
+    local entry="/boot/efi/loader/entries/immutable.conf"
+    if [ -f "$entry" ]; then
+        sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-${name}|g" "$entry"
+        echo "Boot entry updated to: @overlay-${name}"
+    else
+        echo "Boot entry not found at $entry"
+        echo "Manually set rootflags=subvol=@overlay-${name} in your boot config."
+    fi
+}
 
 _chroot_overlay() {
     local root="$1"
     shift
+
+    local username
+    username=$(get_username)
 
     # Mount API filesystems
     mkdir -p "$root"/{dev,dev/pts,proc,sys,run,tmp}
@@ -244,7 +398,7 @@ _chroot_overlay() {
     # Mount data partition into home
     local data=$(data_path)
     if [ -d "$data" ]; then
-        local home_dir="$root/home/USERNAME"
+        local home_dir="$root/home/$username"
         mkdir -p "$home_dir"
         for dir in Documents Downloads Pictures Videos Music; do
             mkdir -p "$home_dir/$dir"
@@ -268,15 +422,13 @@ _chroot_overlay() {
     umount -R "$root/sys" 2>/dev/null || true
     umount "$root/run" 2>/dev/null || true
     umount "$root/tmp" 2>/dev/null || true
-    umount "$root/home/USERNAME/Documents" 2>/dev/null || true
-    umount "$root/home/USERNAME/Downloads" 2>/dev/null || true
-    umount "$root/home/USERNAME/Pictures" 2>/dev/null || true
-    umount "$root/home/USERNAME/Videos" 2>/dev/null || true
-    umount "$root/home/USERNAME/Music" 2>/dev/null || true
+    for dir in Documents Downloads Pictures Videos Music; do
+        umount "$root/home/$username/$dir" 2>/dev/null || true
+    done
 }
 
 _show_boot_config() {
-    local entry="/boot/loader/entries/immutable.conf"
+    local entry="/boot/efi/loader/entries/immutable.conf"
     if [ -f "$entry" ]; then
         local subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
         echo "Boot overlay: ${subvol:-unknown}"
@@ -288,16 +440,20 @@ _show_boot_config() {
 # ── Main ──
 
 case "${1:-}" in
-    create)  shift; cmd_create "$@" ;;
-    shell)   shift; cmd_shell "$@" ;;
-    run)     shift; cmd_run "$@" ;;
-    list)    shift; cmd_list "$@" ;;
-    switch)  shift; cmd_switch "$@" ;;
-    reset)   shift; cmd_reset "$@" ;;
-    delete)  shift; cmd_delete "$@" ;;
-    status)  shift; cmd_status "$@" ;;
-    lock)    shift; cmd_lock "$@" ;;
-    unlock)  shift; cmd_unlock "$@" ;;
+    create)          shift; cmd_create "$@" ;;
+    shell)           shift; cmd_shell "$@" ;;
+    run)             shift; cmd_run "$@" ;;
+    list)            shift; cmd_list "$@" ;;
+    switch)          shift; cmd_switch "$@" ;;
+    reset)           shift; cmd_reset "$@" ;;
+    delete)          shift; cmd_delete "$@" ;;
+    status)          shift; cmd_status "$@" ;;
+    lock)            shift; cmd_lock "$@" ;;
+    unlock)          shift; cmd_unlock "$@" ;;
+    recovery)        shift; cmd_recovery "$@" ;;
+    reset-recovery)  shift; cmd_reset_recovery "$@" ;;
+    healthcheck)     shift; cmd_healthcheck "$@" ;;
+    boot-ok)         shift; cmd_boot_ok "$@" ;;
     -h|--help|help|"") usage ;;
     *) die "Unknown command: $1 (try 'immutable help')" ;;
 esac

@@ -3,16 +3,15 @@ set -euo pipefail
 
 # ── Install immutable Pop!_OS to disk ──
 
-VERSION="0.1.0"
+VERSION="0.3.0"
 BUILD_DIR="${BUILD_DIR:-/tmp/immutable-build}"
-ROOTFS_TAR="$BUILD_DIR/base-rootfs.tar.zst"
-POOL="/pool"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOTFS_TAR="${SCRIPT_DIR}/base-rootfs.tar.zst"
+[ -f "$ROOTFS_TAR" ] || ROOTFS_TAR="$BUILD_DIR/base-rootfs.tar.zst"
 MOUNT_POINT="/mnt/immutable"
-
-# ── Helpers ──
+SWAP_SIZE="8G"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
-info() { echo ""; echo "══════════════════════════════════════"; echo " $1"; echo "══════════════════════════════════════"; echo ""; }
 confirm() { read -p "$1 [y/N]: " -n 1 -r; echo; [[ $REPLY =~ ^[Yy]$ ]]; }
 
 usage() {
@@ -25,7 +24,9 @@ Usage:
 Options:
   --device PATH       Target disk (e.g., /dev/sda) — DESTRUCTIVE!
   --rootfs PATH       Rootfs tarball (default: $ROOTFS_TAR)
-  --efi-only          Skip data partition, mount data from root
+  --swap SIZE         Swap size (default: $SWAP_SIZE)
+  --username NAME     Username to create (prompted if omitted)
+  --password PASS     User password (prompted if omitted)
   --help              Show this help
 
 This will ERASE ALL DATA on the target disk.
@@ -35,13 +36,16 @@ EOF
 # ── Parse args ──
 
 TARGET_DEVICE=""
-EFI_ONLY=0
+USERNAME=""
+PASSWORD=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --device) TARGET_DEVICE="$2"; shift 2 ;;
         --rootfs) ROOTFS_TAR="$2"; shift 2 ;;
-        --efi-only) EFI_ONLY=1; shift ;;
+        --swap) SWAP_SIZE="$2"; shift 2 ;;
+        --username) USERNAME="$2"; shift 2 ;;
+        --password) PASSWORD="$2"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -51,9 +55,22 @@ done
 [ -b "$TARGET_DEVICE" ] || die "Target device not found: $TARGET_DEVICE (use --device /dev/sdX)"
 [ -f "$ROOTFS_TAR" ] || die "Rootfs tarball not found: $ROOTFS_TAR (run build-base.sh first)"
 
-# ── Step 1: Partition ──
+# Prompt for username if not provided
+if [ -z "$USERNAME" ]; then
+    read -rp "Enter username to create: " USERNAME
+fi
+[ -n "$USERNAME" ] || die "Username cannot be empty"
 
-info "Step 1: Partitioning $TARGET_DEVICE"
+# Prompt for password if not provided
+if [ -z "$PASSWORD" ]; then
+    read -rsp "Enter password for $USERNAME: " PASSWORD
+    echo
+fi
+[ -n "$PASSWORD" ] || die "Password cannot be empty"
+
+echo "Username: $USERNAME"
+
+# ── Partition ──
 
 echo "Current partition layout:"
 lsblk "$TARGET_DEVICE" 2>/dev/null || true
@@ -61,156 +78,353 @@ echo ""
 echo "WARNING: This will ERASE ALL DATA on $TARGET_DEVICE"
 confirm "Continue?" || exit 1
 
-# Unmount anything on the target
 for mnt in $(mount | grep "$TARGET_DEVICE" | awk '{print $3}' | sort -r); do
     umount "$mnt" 2>/dev/null || true
 done
 
-# GPT partition table
+EFI_END=1025
+SWAP_MIB=$(( ${SWAP_SIZE%G} * 1024 ))
+SWAP_START="${EFI_END}MiB"
+SWAP_END="$(( EFI_END + SWAP_MIB ))MiB"
+
 parted -s "$TARGET_DEVICE" mklabel gpt
-
-# EFI partition (512MB)
-parted -s "$TARGET_DEVICE" mkpart ESP fat32 1MiB 513MiB
+parted -s "$TARGET_DEVICE" mkpart ESP fat32 1MiB 1025MiB
 parted -s "$TARGET_DEVICE" set 1 esp on
-
-# BTRFS partition (rest)
-parted -s "$TARGET_DEVICE" mkpart root btrfs 513MiB 100%
+parted -s "$TARGET_DEVICE" mkpart swap linux-swap "$SWAP_START" "$SWAP_END"
+parted -s "$TARGET_DEVICE" mkpart root btrfs "$SWAP_END" 100%
 
 sleep 1
 partprobe "$TARGET_DEVICE" 2>/dev/null || true
 
-# Determine partition names
 if [[ "$TARGET_DEVICE" == *"nvme"* ]] || [[ "$TARGET_DEVICE" == *"mmcblk"* ]]; then
     PART_EFI="${TARGET_DEVICE}p1"
-    PART_ROOT="${TARGET_DEVICE}p2"
+    PART_SWAP="${TARGET_DEVICE}p2"
+    PART_ROOT="${TARGET_DEVICE}p3"
 else
     PART_EFI="${TARGET_DEVICE}1"
-    PART_ROOT="${TARGET_DEVICE}2"
+    PART_SWAP="${TARGET_DEVICE}2"
+    PART_ROOT="${TARGET_DEVICE}3"
 fi
 
-echo "EFI: $PART_EFI"
-echo "Root: $PART_ROOT"
+echo "EFI: $PART_EFI  Swap: $PART_SWAP  Root: $PART_ROOT"
 
-# ── Step 2: Format ──
-
-info "Step 2: Formatting"
+# ── Format ──
 
 mkfs.fat -F32 -n EFI "$PART_EFI"
 mkfs.btrfs -f -L immutable "$PART_ROOT"
 
-# ── Step 3: Create BTRFS subvolumes ──
-
-info "Step 3: Creating BTRFS subvolumes"
+# ── BTRFS subvolumes ──
 
 mkdir -p "$MOUNT_POINT"
 mount "$PART_ROOT" "$MOUNT_POINT"
 
-btrfs subvolume create "$MOUNT_POINT/@base"
 btrfs subvolume create "$MOUNT_POINT/@data"
 btrfs subvolume create "$MOUNT_POINT/@snapshots"
 btrfs subvolume create "$MOUNT_POINT/@overlay-init"
 
-# Create initial overlay from base (will be populated later)
-# For now, create empty overlay structure
+# Create @data user directories
+for dir in Documents Downloads Pictures Videos Music; do
+    mkdir -p "$MOUNT_POINT/@data/$dir"
+done
 
 umount "$MOUNT_POINT"
 
-# ── Step 4: Mount and extract rootfs ──
+# ── Extract rootfs ──
 
-info "Step 4: Installing base rootfs"
-
-# Mount @overlay-init as root (writable, will be the initial boot)
 mount -o subvol=@overlay-init "$PART_ROOT" "$MOUNT_POINT"
 
-# Extract rootfs
 echo "Extracting rootfs..."
 zstd -d "$ROOTFS_TAR" --stdout | tar -C "$MOUNT_POINT" -xf -
 
-# Mount boot
 mkdir -p "$MOUNT_POINT/boot/efi"
 mount "$PART_EFI" "$MOUNT_POINT/boot/efi"
 
-# ── Step 5: Configure fstab ──
+# ── Encrypted swap (plain dm-crypt, auto-generated key like Pop!_OS) ──
 
-info "Step 5: Configuring fstab"
+SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
+mkswap -L swap "$PART_SWAP"
+echo "cryptswap UUID=$SWAP_UUID /dev/urandom swap,plain,offset=1024,cipher=aes-xts-plain64,size=512" >> "$MOUNT_POINT/etc/crypttab"
+
+# ── Chroot setup ──
+
+mount --bind /dev "$MOUNT_POINT/dev"
+mount --bind /dev/pts "$MOUNT_POINT/dev/pts"
+mount -t proc proc "$MOUNT_POINT/proc"
+mount --rbind /sys "$MOUNT_POINT/sys"
+mount --make-rslave "$MOUNT_POINT/sys"
+mount --bind /run "$MOUNT_POINT/run"
+
+if ! cmp -s /etc/resolv.conf "$MOUNT_POINT/etc/resolv.conf" 2>/dev/null; then
+    cp /etc/resolv.conf "$MOUNT_POINT/etc/resolv.conf"
+fi
+
+# ── Preseed debconf (non-interactive installs) ──
+
+mkdir -p "$MOUNT_POINT/tmp"
+cat > "$MOUNT_POINT/tmp/debconf-seed.conf" <<'SEED'
+console-setup console-setup/charmap42 select UTF-8
+console-setup console-setup/charmap select UTF-8
+console-setup console-setup/codeset select guess
+locales locales/locales_to_be_generated multiselect en_US.UTF-8 UTF-8
+locales locales/default_environment_locale select en_US.UTF-8
+locales locales/purge_multiselect boolean false
+SEED
+chroot "$MOUNT_POINT" debconf-set-selections < "$MOUNT_POINT/tmp/debconf-seed.conf"
+rm -f "$MOUNT_POINT/tmp/debconf-seed.conf"
+
+# ── Create user ──
+
+echo "Creating user: $USERNAME"
+chroot "$MOUNT_POINT" useradd -m -s /bin/bash -G sudo "$USERNAME" 2>/dev/null || true
+echo "$USERNAME:$PASSWORD" | chroot "$MOUNT_POINT" chpasswd
+
+# Write immutable config (used by immutable CLI for username)
+cat > "$MOUNT_POINT/etc/immutable.conf" <<CONF
+# Immutable Pop!_OS configuration
+USERNAME=$USERNAME
+CONF
+
+# ── Kernelstub config (must exist before apt postinst runs) ──
+
+mkdir -p "$MOUNT_POINT/etc/kernelstub"
+cat > "$MOUNT_POINT/etc/kernelstub/configuration" <<'KERNELSTUB'
+{
+  "default": {
+    "kernel_options": ["quiet", "loglevel=0", "systemd.show_status=false", "splash", "rootflags=subvol=@overlay-init"],
+    "esp_path": "/boot/efi",
+    "setup_loader": false,
+    "manage_mode": false,
+    "force_update": false,
+    "live_mode": false,
+    "config_rev": 3
+  },
+  "user": {
+    "kernel_options": ["quiet", "loglevel=0", "systemd.show_status=false", "splash", "rootflags=subvol=@overlay-init"],
+    "esp_path": "/boot/efi",
+    "setup_loader": true,
+    "manage_mode": true,
+    "force_update": false,
+    "live_mode": false,
+    "config_rev": 3
+  }
+}
+KERNELSTUB
+
+# ── Detect hardware ──
+
+HW_PACKAGES="pop-desktop linux-system76 system76-driver system76-power efibootmgr systemd-boot"
+NVIDIA_BOOT_OPTS=""
+if lspci 2>/dev/null | grep -qi nvidia; then
+    echo "NVIDIA GPU detected"
+    HW_PACKAGES="$HW_PACKAGES system76-driver-nvidia"
+    NVIDIA_BOOT_OPTS="nvidia-drm.modeset=1"
+fi
+
+# ── Install packages ──
+
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get update -y
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    initramfs-tools-core initramfs-tools \
+    locales console-setup
+
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES
+
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y
+
+# ── Disable zz-kernelstub hook to prevent live ISO options from leaking ──
+
+# The live ISO kernel package installs zz-kernelstub which creates entries with
+# boot=casper and live-media-path options. We need to disable it so our config
+# is used instead.
+if [ -f "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub" ]; then
+    echo "Disabling live ISO zz-kernelstub hook..."
+    chmod -x "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
+fi
+
+# ── fstab ──
 
 ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
 EFI_UUID=$(blkid -s UUID -o value "$PART_EFI")
+SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
 
 cat > "$MOUNT_POINT/etc/fstab" <<FSTAB
-# /etc/fstab: immutable Pop!_OS
-UUID=$ROOT_UUID  /            btrfs  defaults,noatime,compress=zstd:1,ssd,subvol=/@overlay-init  0 0
-UUID=$ROOT_UUID  /pool        btrfs  defaults,noatime,subvolid=5                                  0 0
-UUID=$ROOT_UUID  /home/USERNAME/.config  btrfs  defaults,noatime,compress=zstd:1,ssd,subvol=/@overlay-init  0 0
-UUID=$EFI_UUID   /boot/efi    vfat   defaults,noatime,fmask=0022,dmask=0022,codepage=437         0 2
+UUID=$ROOT_UUID  /            btrfs  defaults,noatime,compress=zstd:1,ssd,subvol=@overlay-init  0 0
+UUID=$ROOT_UUID  /pool        btrfs  defaults,noatime,subvolid=5                                0 0
+UUID=$EFI_UUID   /boot/efi    vfat   defaults,noatime,fmask=0022,dmask=0022,codepage=437        0 2
+/dev/mapper/cryptswap  none  swap   sw                                                          0 0
 FSTAB
 
-# ── Step 6: Configure systemd-boot ──
+# ── Initramfs + systemd-boot ──
 
-info "Step 6: Configuring systemd-boot"
-
-# Install systemd-boot
-chroot "$MOUNT_POINT" bootctl --path=/boot/efi install 2>/dev/null || true
-
-# Create loader config
-mkdir -p "$MOUNT_POINT/boot/efi/loader"
-cat > "$MOUNT_POINT/boot/efi/loader/loader.conf" <<BOOTCFG
-default  immutable.conf
-timeout  5
-console-mode auto
-editor   yes
-BOOTCFG
-
-# Create boot entry
-mkdir -p "$MOUNT_POINT/boot/efi/loader/entries"
-cat > "$MOUNT_POINT/boot/efi/loader/entries/immutable.conf" <<ENTRY
-title   Immutable Pop!_OS
-linux   /vmlinuz
-initrd  /initrd.img
-options root=UUID=$ROOT_UUID rootflags=subvol=/@overlay-init rw quiet splash
-ENTRY
-
-# ── Step 7: Configure initramfs for BTRFS ──
-
-info "Step 7: Configuring initramfs"
-
-# Ensure btrfs module is in initramfs
 echo "btrfs" >> "$MOUNT_POINT/etc/initramfs-tools/modules"
 
-# Rebuild initramfs
-chroot "$MOUNT_POINT" update-initramfs -u 2>/dev/null || true
+echo "Installing systemd-boot..."
+chroot "$MOUNT_POINT" bootctl --path=/boot/efi install --no-variables
 
-# ── Step 8: Set up pool mount ──
+# Create UEFI boot entry
+echo "Creating UEFI boot entry..."
+chroot "$MOUNT_POINT" efibootmgr --create \
+    --disk "$TARGET_DEVICE" --part 1 \
+    --write-signature --label "Pop!_OS" \
+    --loader '\EFI\systemd\systemd-bootx64.efi' || echo "WARNING: efibootmgr failed"
 
-info "Step 8: Setting up pool"
+# Regenerate initramfs (triggers zz-kernelstub which copies kernel/initrd to ESP)
+echo "Generating initramfs..."
+chroot "$MOUNT_POINT" update-initramfs -c -k all
+
+# ── Clean up stale boot entries from live ISO ──
+
+echo "Cleaning up stale boot entries..."
+cd "$MOUNT_POINT/boot/efi/loader/entries" 2>/dev/null || true
+# Remove any entries with live ISO options
+for entry in *.conf; do
+    [ -f "$entry" ] || continue
+    if grep -qE 'boot=casper|live-media-path|hostname=pop-os|username=pop-os' "$entry" 2>/dev/null; then
+        echo "  Removing stale entry: $entry"
+        rm -f "$entry"
+    fi
+done
+cd - >/dev/null
+
+# ── Ensure correct kernelstub boot entry exists ──
+
+echo "Configuring boot entry..."
+ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
+
+# Build kernel options (debug enabled until boot issues resolved)
+KERNEL_OPTS="root=UUID=$ROOT_UUID ro loglevel=0 systemd.show_status=false systemd.log_level=debug systemd.log_target=kmsg rootflags=subvol=@overlay-init"
+if [ -n "$NVIDIA_BOOT_OPTS" ]; then
+    KERNEL_OPTS="$KERNEL_OPTS $NVIDIA_BOOT_OPTS"
+fi
+
+# Get kernel version
+KVER=$(ls "$MOUNT_POINT/boot/vmlinuz-"* 2>/dev/null | head -1 | sed 's|.*/vmlinuz-||')
+if [ -z "$KVER" ]; then
+    KVER=$(ls "$MOUNT_POINT/boot/efi/EFI/Pop_OS-"*/vmlinuz.efi 2>/dev/null | head -1 | sed 's|.*/Pop_OS-[^/]*/||')
+fi
+
+# Remove any duplicate Pop_OS-current entries and create a clean one
+ESP_ENTRIES="$MOUNT_POINT/boot/efi/loader/entries"
+if [ -d "$ESP_ENTRIES" ]; then
+    # Remove all Pop_OS-current.conf entries (they may be stale/duplicate)
+    rm -f "$ESP_ENTRIES/Pop_OS-current.conf"
+    
+    # Create clean entry
+    cat > "$ESP_ENTRIES/Pop_OS-current.conf" <<ENTRY
+title Pop!_OS
+linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
+initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
+options ${KERNEL_OPTS}
+ENTRY
+    echo "Created: $ESP_ENTRIES/Pop_OS-current.conf"
+fi
+
+# ── Create immutable.conf for overlay switching ──
+
+if [ -d "$ESP_ENTRIES" ]; then
+    cat > "$ESP_ENTRIES/immutable.conf" <<ENTRY
+title Immutable (overlay-init)
+linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
+initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
+options root=UUID=$ROOT_UUID ro quiet loglevel=0 systemd.show_status=false splash rootflags=subvol=@overlay-init ${NVIDIA_BOOT_OPTS}
+ENTRY
+    echo "Created: $ESP_ENTRIES/immutable.conf"
+
+    # Recovery boot entry — boots @overlay-recovery as fallback
+    cat > "$ESP_ENTRIES/recovery.conf" <<ENTRY
+title Pop!_OS Recovery
+linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
+initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
+options root=UUID=$ROOT_UUID ro loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-recovery ${NVIDIA_BOOT_OPTS}
+ENTRY
+    echo "Created: $ESP_ENTRIES/recovery.conf"
+fi
+
+# ── Set loader timeout ──
+
+if [ -f "$MOUNT_POINT/boot/efi/loader/loader.conf" ]; then
+    # timeout 0 = boot immediately, no menu. Hold Shift during boot to see menu.
+    sed -i 's/^timeout .*/timeout 0/' "$MOUNT_POINT/boot/efi/loader/loader.conf" 2>/dev/null || true
+    if ! grep -q '^timeout' "$MOUNT_POINT/boot/efi/loader/loader.conf" 2>/dev/null; then
+        echo "timeout 0" >> "$MOUNT_POINT/boot/efi/loader/loader.conf"
+    fi
+    # Set default boot entry (normal boot, not recovery)
+    sed -i 's|^default .*|default Pop_OS-current.conf|' "$MOUNT_POINT/boot/efi/loader/loader.conf" 2>/dev/null || true
+    if ! grep -q '^default' "$MOUNT_POINT/boot/efi/loader/loader.conf" 2>/dev/null; then
+        echo "default Pop_OS-current.conf" >> "$MOUNT_POINT/boot/efi/loader/loader.conf"
+    fi
+    echo "Boot menu: hidden (hold Shift during boot for recovery menu)"
+fi
+
+# Verify ESP has the required files
+echo "Verifying ESP contents..."
+for f in \
+    "EFI/systemd/systemd-bootx64.efi" \
+    "EFI/BOOT/BOOTX64.EFI" \
+    "loader/loader.conf"; do
+    if [ ! -f "$MOUNT_POINT/boot/efi/$f" ]; then
+        echo "ERROR: Missing ESP file: $f"
+    fi
+done
+
+# Verify boot entry exists
+if ! ls "$MOUNT_POINT"/boot/efi/loader/entries/*.conf >/dev/null 2>&1; then
+    echo "ERROR: No boot entries found in /boot/efi/loader/entries/"
+fi
+
+# Verify loader.conf default
+if [ -f "$MOUNT_POINT/boot/efi/loader/loader.conf" ]; then
+    echo "loader.conf contents:"
+    cat "$MOUNT_POINT/boot/efi/loader/loader.conf"
+fi
+
+echo "Boot entries:"
+ls -la "$MOUNT_POINT/boot/efi/loader/entries/" 2>/dev/null || true
+
+# ── Unmount chroot ──
+
+umount -R "$MOUNT_POINT/dev" 2>/dev/null || true
+umount -R "$MOUNT_POINT/proc" 2>/dev/null || true
+umount -R "$MOUNT_POINT/sys" 2>/dev/null || true
+umount "$MOUNT_POINT/run" 2>/dev/null || true
+
+# ── Set up immutable base ──
 
 mkdir -p "$MOUNT_POINT/pool"
-
-# Add pool to fstab
-echo "UUID=$ROOT_UUID  /pool  btrfs  defaults,noatime,subvolid=5  0 0" >> "$MOUNT_POINT/etc/fstab"
-
-# Mount pool
 mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
-
-# Move @overlay-init contents to @base (the immutable base)
-echo "Setting up immutable base..."
 btrfs subvolume snapshot "$MOUNT_POINT/pool/@overlay-init" "$MOUNT_POINT/pool/@base"
-
-# Set @base as read-only
 btrfs property set "$MOUNT_POINT/pool/@base" ro true
 
-# ── Step 9: Install immutable CLI ──
+# Create recovery overlay (snapshot of @base, used as fallback for failed boots)
+btrfs subvolume snapshot "$MOUNT_POINT/pool/@base" "$MOUNT_POINT/pool/@overlay-recovery"
+echo "Created recovery overlay"
 
-info "Step 9: Installing immutable CLI"
+# ── Install immutable CLI ──
 
 cp "$(dirname "$0")/immutable" "$MOUNT_POINT/usr/local/bin/immutable"
 chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
 
-# ── Step 10: Cleanup ──
+# ── Install systemd services for boot recovery ──
 
-info "Step 10: Cleanup"
+cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/usr/local/bin/immutable-boot-counter.sh"
+chmod +x "$MOUNT_POINT/usr/local/bin/immutable-boot-counter.sh"
 
-# Unmount
+cp "$(dirname "$0")/immutable-boot-counter.service" "$MOUNT_POINT/etc/systemd/system/immutable-boot-counter.service"
+cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/system/immutable-healthcheck.service"
+
+# Enable services
+chroot "$MOUNT_POINT" systemctl enable immutable-boot-counter.service 2>/dev/null || true
+chroot "$MOUNT_POINT" systemctl enable immutable-healthcheck.service 2>/dev/null || true
+
+# Initialize boot counter
+mkdir -p "$MOUNT_POINT/pool/@data"
+echo "0" > "$MOUNT_POINT/pool/@data/boot-counter"
+
+echo "Installed boot recovery services"
+
+# ── Cleanup ──
+
 umount "$MOUNT_POINT/pool" 2>/dev/null || true
 umount "$MOUNT_POINT/boot/efi" 2>/dev/null || true
 umount "$MOUNT_POINT" 2>/dev/null || true

@@ -1,0 +1,12 @@
+[Unit]
+Description=Immutable boot healthcheck — mark boot as healthy
+After=multi-user.target
+Requires=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/immutable boot-ok
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
