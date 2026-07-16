@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ── Immutable Pop!_OS: Overlay Management CLI ──
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 POOL="${IMMUTABLE_POOL:-/pool}"
 BASE_SUBVOL="@base"
 DATA_SUBVOL="@data"
