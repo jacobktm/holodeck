@@ -129,6 +129,20 @@ else
 fi
 
 echo ""
+echo "=== Boot Performance Analysis ==="
+if command -v systemd-analyze &>/dev/null; then
+    echo "  Boot time:"
+    systemd-analyze 2>&1 | head -5
+    echo ""
+    echo "  Slowest services:"
+    systemd-analyze blame 2>&1 | head -15
+    echo ""
+    echo "  Critical chain:"
+    systemd-analyze critical-chain 2>&1 | head -15
+else
+    echo "  systemd-analyze not available"
+fi
+echo ""
 
 # ════════════════════════════════════════════
 # TEST 1: CLI Basics
@@ -198,10 +212,9 @@ fi
 echo ""
 echo "  Overlays after creation:"
 LIST_OUTPUT=$(immutable list 2>&1)
+echo "$LIST_OUTPUT"
 echo "$LIST_OUTPUT" | grep -q "$TEST_OVERLAY" && log_pass "Overlay appears in 'immutable list'" || {
     log_fail "Overlay missing from 'immutable list'"
-    echo "  --- immutable list output ---"
-    echo "$LIST_OUTPUT"
     echo "  --- btrfs subvolume list raw ---"
     btrfs subvolume list /pool 2>&1
     echo "  --- grep test ---"
