@@ -183,7 +183,17 @@ fi
 # Verify it appears in list
 echo ""
 echo "  Overlays after creation:"
-immutable list 2>&1 | grep -q "$TEST_OVERLAY" && log_pass "Overlay appears in 'immutable list'" || log_fail "Overlay missing from 'immutable list'"
+LIST_OUTPUT=$(immutable list 2>&1)
+echo "$LIST_OUTPUT" | grep -q "$TEST_OVERLAY" && log_pass "Overlay appears in 'immutable list'" || {
+    log_fail "Overlay missing from 'immutable list'"
+    echo "  --- immutable list output ---"
+    echo "$LIST_OUTPUT"
+    echo "  --- btrfs subvolume list raw ---"
+    btrfs subvolume list /pool 2>&1
+    echo "  --- grep test ---"
+    echo "$LIST_OUTPUT" | grep -i "overlay" || echo "(no overlay lines found)"
+    echo "  --- end debug ---"
+}
 
 echo ""
 
