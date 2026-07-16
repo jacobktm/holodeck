@@ -33,7 +33,12 @@ cleanup() {
             for m in $(mount | grep "$path" | awk '{print $3}' | sort -r); do
                 umount "$m" 2>/dev/null || true
             done
-            btrfs subvolume delete "$path" 2>/dev/null && echo "  Removed $name" || true
+            btrfs subvolume delete "$path" 2>/dev/null && echo "  Removed $name" || echo "  WARNING: Failed to remove $name"
+        fi
+        # Verify deletion
+        if [ -d "$path" ]; then
+            echo "  ERROR: $path still exists after deletion!"
+            btrfs subvolume delete "$path" 2>/dev/null || true
         fi
     done
     # Remove test data file
@@ -400,6 +405,14 @@ if [ ! -f "$OVERLAY2_PATH/tmp/$MARKER" ]; then
 else
     log_fail "First overlay marker leaked into second overlay"
 fi
+
+# Verify both overlays appear in immutable list
+echo ""
+echo "  Overlays with both test overlays:"
+LIST_OUTPUT=$(immutable list 2>&1)
+echo "$LIST_OUTPUT"
+echo "$LIST_OUTPUT" | grep -q "$TEST_OVERLAY" && log_pass "First overlay appears in list" || log_fail "First overlay missing from list"
+echo "$LIST_OUTPUT" | grep -q "$TEST_OVERLAY2" && log_pass "Second overlay appears in list" || log_fail "Second overlay missing from list"
 
 echo ""
 

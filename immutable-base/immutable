@@ -166,13 +166,14 @@ cmd_list() {
     local count=0
     local list_output
     list_output=$(btrfs subvolume list "$POOL" 2>/dev/null || true)
+    local path name full size
     while IFS= read -r line; do
-        local path=$(echo "$line" | grep -oP 'path \K.*')
+        path=$(echo "$line" | grep -oP 'path \K.*')
         case "$path" in
             @overlay-*)
-                local name="${path#@overlay-}"
-                local full="$POOL/$path"
-                local size=$(du -sh "$full" 2>/dev/null | cut -f1)
+                name="${path#@overlay-}"
+                full="$POOL/$path"
+                size=$(du -sh "$full" 2>/dev/null | cut -f1)
                 echo "  $name ($size) — $full"
                 count=$((count + 1))
                 ;;
