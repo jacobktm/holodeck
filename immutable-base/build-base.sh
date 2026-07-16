@@ -288,7 +288,7 @@ info "Step 1: Creating rootfs with debootstrap"
 
     debootstrap \
         --arch="$ARCH" \
-        --include="systemd-sysv init dbus sudo btrfs-progs" \
+        --include="systemd systemd-sysv init dbus sudo btrfs-progs" \
         --variant=minbase \
         "$DISTRO" \
         "$ROOTFS_DIR" \
