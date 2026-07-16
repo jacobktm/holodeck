@@ -25,6 +25,15 @@ log_info() { echo "  INFO: $1"; }
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
+    # Revert boot entry to overlay-init if it was changed
+    local entry="/boot/efi/loader/entries/immutable.conf"
+    if [ -f "$entry" ]; then
+        local current_subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
+        if [ -n "$current_subvol" ] && [[ "$current_subvol" == *@overlay-test* ]]; then
+            echo "  Reverting boot entry from $current_subvol to @overlay-init"
+            sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-init|g" "$entry"
+        fi
+    fi
     # Remove test overlays
     for name in "$TEST_OVERLAY" "$TEST_OVERLAY2"; do
         local path="$POOL/@overlay-$name"
