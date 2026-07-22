@@ -2,6 +2,7 @@
 import os
 import pty
 import select
+import shlex
 import signal
 import struct
 import fcntl
@@ -54,11 +55,10 @@ class PtyRelay:
                 os.close(slave_fd)
 
             if self.args:
-                cmd_str = " ".join(self.args)
                 exec_cmd = [
                     CHROOT_BIN, self.root,
                     "su", "-", self.username,
-                    "-c", cmd_str,
+                    "-c", shlex.join(self.args),
                 ]
             else:
                 exec_cmd = [
@@ -76,7 +76,7 @@ class PtyRelay:
                 "LANG": "en_US.UTF-8",
             }
 
-            os.execve(chroot_bin, exec_cmd, env)
+            os.execve(CHROOT_BIN, exec_cmd, env)
             os._exit(127)
 
         # Parent process (daemon)

@@ -26,14 +26,22 @@ INSTALL_REPO=""  # format: owner/repo@branch
 
 # ── Parse args ──
 
+IMMUTABLE_PASSWORD="${IMMUTABLE_PASSWORD:-}"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --test-pkg) TEST_PKG_REMOVE="$2"; shift 2 ;;
         --install-pkg) INSTALL_PKG="$2"; shift 2 ;;
         --repo) INSTALL_REPO="$2"; shift 2 ;;
+        --password) IMMUTABLE_PASSWORD="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Export for non-interactive auth
+if [ -n "$IMMUTABLE_PASSWORD" ]; then
+    export IMMUTABLE_PASSWORD
+fi
 
 # ── Helpers ──
 
@@ -88,6 +96,13 @@ echo ""
 echo "Test overlay names: $TEST_OVERLAY, $TEST_OVERLAY2"
 echo "PID marker: $$"
 echo ""
+
+# Check if password is available for tests that need auth (switch, unlock)
+if [ -z "$IMMUTABLE_PASSWORD" ]; then
+    echo "WARNING: No password set. Tests requiring unlock/switch auth will fail."
+    echo "  Set via: --password <pass> or export IMMUTABLE_PASSWORD=<pass>"
+    echo ""
+fi
 
 # ── Clean up stale test overlays from previous runs ──
 echo "=== Cleaning stale overlays ==="
@@ -803,13 +818,11 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     fi
 
     # Compare against base
-    BASE_BIN=$(immutable run @base bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
-    if [ -n "$BASE_BIN" ]; then
-        BASE_HASH=$(root_cmd chroot "$CHROOT_HELPER" sha256sum "$BASE_BIN" 2>/dev/null | awk '{print $1}')
-        echo "  SHA256 in @base: $BASE_HASH"
+    if [ -n "$INSTALL_PKG" ]; then
+        BASE_HASH=$(immutable run @base sha256sum "/usr/bin/$INSTALL_PKG" 2>/dev/null | awk '{print $1}' || true)
+        echo "  SHA256 in @base: ${BASE_HASH:-not found}"
     else
         BASE_HASH=""
-        echo "  Package not in @base"
     fi
 
     if [ -n "$OVERLAY1_HASH" ] && [ -n "$BASE_HASH" ]; then

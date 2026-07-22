@@ -2,6 +2,7 @@
 import os
 import re
 import select
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +23,42 @@ CHROOT_BIN = shutil.which("chroot") or "/usr/sbin/chroot"
 
 # Commands that require password authentication
 AUTH_REQUIRED = {"unlock", "switch"}
+
+# Commands allowed on @base without authentication (read-only inspection).
+# When @base is locked (btrfs ro=true), even these can't write anything.
+# apt/dpkg excluded — they modify state even on read-only roots.
+READONLY_CMDS = {
+    # File inspection
+    "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep",
+    "less", "more", "file", "stat", "du", "df", "tree",
+    # Command lookup
+    "which", "type", "command",
+    # Conditional checks
+    "test", "[",
+    # Checksums and metadata
+    "sha256sum", "md5sum", "sha1sum", "shasum",
+    # System info
+    "uname", "hostname", "id", "whoami", "who", "w",
+    # Output
+    "echo", "printf",
+    # Environment
+    "env", "printenv",
+    # Path manipulation
+    "readlink", "realpath", "basename", "dirname",
+    # Text processing (read-only transforms)
+    "sort", "uniq", "cut", "tr", "sed", "awk", "column",
+    # Other
+    "date", "cal", "true", "false",
+}
+
+
+def _is_readonly_cmd(args: list) -> bool:
+    """Check if a command args list is a whitelisted read-only command."""
+    if not args:
+        return False
+    # Get the actual command name (last component of path)
+    cmd_name = os.path.basename(args[0])
+    return cmd_name in READONLY_CMDS
 
 
 def verify_password(username: str, password: str) -> bool:
@@ -93,11 +130,11 @@ class CommandHandler:
             yield {"ok": False, "error": "Missing 'args' field"}
             return
 
-        # @base operations require authentication
-        if overlay == "@base":
+        # @base: require auth for non-whitelisted (potentially mutating) commands
+        if overlay == "@base" and not _is_readonly_cmd(args):
             password = msg.get("password")
             if not password:
-                yield {"ok": False, "error": "Password required for @base operations", "auth_required": True}
+                yield {"ok": False, "error": "Password required for @base write operations", "auth_required": True}
                 return
             username = self.chroot._get_username()
             if not verify_password(username, password):
@@ -116,15 +153,19 @@ class CommandHandler:
             self.chroot.unmount(root, mount_ctx)
 
     def setup_chroot(self, msg: Dict[str, Any]) -> Optional[Any]:
-        """Set up chroot mounts for a PTY session."""
+        """Set up chroot mounts for a PTY session.
+        Returns mount context dict, or None on failure.
+        Sets self._last_auth_required = True if auth was needed but missing."""
+        self._last_auth_required = False
         overlay = msg.get("overlay")
         if not overlay:
             return None
 
-        # @base operations require authentication
+        # @base interactive shell requires auth (shell can do anything)
         if overlay == "@base":
             password = msg.get("password")
             if not password:
+                self._last_auth_required = True
                 return None
             username = self.chroot._get_username()
             if not verify_password(username, password):
@@ -303,8 +344,7 @@ class CommandHandler:
         if len(args) == 1:
             cmd.append(args[0])
         else:
-            quoted = " ".join(repr(a) for a in args)
-            cmd.append(quoted)
+            cmd.append(shlex.join(args))
 
         full_env = os.environ.copy()
         full_env["HOME"] = f"/home/{username}"

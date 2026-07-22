@@ -136,7 +136,10 @@ class Daemon:
         """Handle an interactive PTY session."""
         mount_ctx = self.handler.setup_chroot(msg)
         if mount_ctx is None:
-            Message.send(sock, {"ok": False, "error": "Failed to set up chroot"})
+            if self.handler._last_auth_required:
+                Message.send(sock, {"ok": False, "error": "Password required for @base shell", "auth_required": True})
+            else:
+                Message.send(sock, {"ok": False, "error": "Failed to set up chroot"})
             return
 
         overlay_name = msg.get("overlay", "@base")

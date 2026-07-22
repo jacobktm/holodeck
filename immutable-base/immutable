@@ -36,7 +36,10 @@ def connect() -> socket.socket:
 
 
 def get_password():
-    """Prompt for password (no echo)."""
+    """Get password from IMMUTABLE_PASSWORD env var, or prompt interactively."""
+    pw = os.environ.get("IMMUTABLE_PASSWORD")
+    if pw:
+        return pw
     import getpass
     return getpass.getpass("Password: ")
 
