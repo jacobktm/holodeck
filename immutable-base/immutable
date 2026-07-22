@@ -101,7 +101,14 @@ check_pool() {
 }
 
 base_path() { echo "$POOL/$BASE_SUBVOL"; }
-overlay_path() { echo "$POOL/$OVERLAY_PREFIX$1"; }
+overlay_path() {
+    local name="$1"
+    case "$name" in
+        @base)   echo "$POOL/$BASE_SUBVOL" ;;
+        @data)   echo "$POOL/$DATA_SUBVOL" ;;
+        *)       echo "$POOL/$OVERLAY_PREFIX$name" ;;
+    esac
+}
 data_path() { echo "$POOL/$DATA_SUBVOL"; }
 snapshots_path() { echo "$POOL/$SNAPSHOTS_SUBVOL"; }
 
@@ -127,14 +134,19 @@ cmd_create() {
 }
 
 cmd_shell() {
-    local name="${1:?Usage: immutable shell <name>}"
+    local name="${1:?Usage: immutable shell <name> [command...]}"
+    shift
     ensure_pool
 
     local dst=$(overlay_path "$name")
     [ -d "$dst" ] || die "Overlay '$name' not found. Use 'immutable list' to see available overlays."
 
     echo "Entering overlay '$name'..."
-    _chroot_overlay "$dst"
+    if [ $# -gt 0 ]; then
+        _chroot_overlay "$dst" "$@"
+    else
+        _chroot_overlay "$dst" /bin/bash
+    fi
 }
 
 cmd_run() {
