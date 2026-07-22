@@ -162,6 +162,31 @@ else
 fi
 echo ""
 
+# Check if modules required by cups-filters.conf are present
+echo "  Kernel modules check:"
+KVER=$(uname -r)
+MODDIR="/lib/modules/$KVER"
+if [ -d "$MODDIR" ]; then
+    echo "    Kernel: $KVER"
+    for mod in lp ppdev parport_pc; do
+        if modprobe --dry-run "$mod" 2>/dev/null; then
+            echo "    $mod: found"
+        else
+            echo "    $mod: MISSING (will cause systemd-modules-load timeout)"
+        fi
+    done
+else
+    echo "    WARNING: /lib/modules/$KVER not found — no kernel modules installed"
+    echo "    systemd-modules-load.service will timeout on cups-filters.conf"
+fi
+# Check if cups-filters.conf exists
+if [ -f /etc/modules-load.d/cups-filters.conf ]; then
+    echo "    cups-filters.conf: present (will try to load lp, ppdev, parport_pc)"
+else
+    echo "    cups-filters.conf: not present (no parallel port module loading)"
+fi
+echo ""
+
 # ════════════════════════════════════════════
 # TEST 1: CLI Basics
 # ════════════════════════════════════════════
