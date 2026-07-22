@@ -6,6 +6,8 @@ set -uo pipefail
 # Tests: overlay creation, isolation, @base immutability, reset, @data persistence,
 #        switch/reboot, delete, lock/unlock, shadowing, package version isolation.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 POOL="/pool"
 BASE="$POOL/@base"
 TEST_OVERLAY="test-$(date +%s)"
@@ -613,7 +615,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     # Install the package from the specific branch in overlay1
     echo "  Installing $INSTALL_PKG from $INSTALL_REPO in $TEST_OVERLAY..."
     # Copy popdev keyring into overlay directly
-    KEYRING_SRC="$(dirname "$(dirname "$0")")/lib/popdev-archive-keyring.gpg"
+    KEYRING_SRC="$REPO_ROOT/lib/popdev-archive-keyring.gpg"
     KEYRING_DST="$POOL/@overlay-$TEST_OVERLAY/etc/apt/keyrings/popdev-archive-keyring.gpg"
     if [ -f "$KEYRING_SRC" ]; then
         mkdir -p "$(dirname "$KEYRING_DST")"
