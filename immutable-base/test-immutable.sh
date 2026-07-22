@@ -187,6 +187,15 @@ else
 fi
 echo ""
 
+# Journal diagnostics for slow services
+echo "  Journal diagnostics:"
+echo "    systemd-modules-load.service:"
+journalctl -b -u systemd-modules-load.service --no-pager 2>&1 | tail -10 | sed 's/^/      /'
+echo ""
+echo "    sysinit.target (last 20 lines):"
+journalctl -b -u sysinit.target --no-pager 2>&1 | tail -20 | sed 's/^/      /'
+echo ""
+
 # ════════════════════════════════════════════
 # TEST 1: CLI Basics
 # ════════════════════════════════════════════
