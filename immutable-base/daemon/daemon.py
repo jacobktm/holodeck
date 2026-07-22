@@ -9,6 +9,7 @@ import sys
 import signal
 import socket
 import logging
+import logging.handlers
 
 # Add daemon directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -162,7 +163,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.SysLogHandler("/dev/log"),
+            logging.handlers.SysLogHandler("/dev/log"),
             logging.StreamHandler(sys.stderr),
         ],
     )
