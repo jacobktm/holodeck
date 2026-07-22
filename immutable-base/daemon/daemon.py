@@ -29,6 +29,7 @@ class Daemon:
     def __init__(self):
         self.handler = CommandHandler()
         self.running = True
+        self.from_systemd = False
 
     def run(self):
         """Main daemon loop."""
@@ -37,8 +38,8 @@ class Daemon:
         sock = self._create_listener()
 
         log.info("Immutable daemon started on %s",
-                 sock.getsockname() if not hasattr(sock, '_from_systemd')
-                 else SOCKET_PATH)
+                 SOCKET_PATH if self.from_systemd
+                 else sock.getsockname())
 
         while self.running:
             try:
@@ -64,9 +65,8 @@ class Daemon:
         """Create the listening socket, preferring systemd FD."""
         systemd_fd = int(os.environ.get("LISTEN_FDS", 0))
         if systemd_fd > 0:
-            sock = socket.fromfd(SOCKET_FD, socket.AF_UNIX, socket.SOCK_STREAM)
-            sock._from_systemd = True
-            return sock
+            self.from_systemd = True
+            return socket.fromfd(SOCKET_FD, socket.AF_UNIX, socket.SOCK_STREAM)
 
         # Fallback for development/testing
         os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
@@ -85,7 +85,6 @@ class Daemon:
         except (KeyError, ImportError):
             pass
 
-        sock._from_systemd = False
         return sock
 
     def _handle_client(self, client_sock):
