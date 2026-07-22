@@ -2,6 +2,7 @@
 import os
 import re
 import select
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, Generator, List
@@ -17,6 +18,24 @@ DATA_SUBVOL = "@data"
 OVERLAY_PREFIX = "@overlay-"
 RECOVERY_OVERLAY = "recovery"
 IMMUTABLE_CONF = "/etc/immutable.conf"
+CHROOT_BIN = shutil.which("chroot") or "/usr/sbin/chroot"
+
+# Commands that require password authentication
+AUTH_REQUIRED = {"unlock", "switch"}
+
+
+def verify_password(username: str, password: str) -> bool:
+    """Verify a user's password via PAM (su)."""
+    try:
+        result = subprocess.run(
+            ["su", "-c", "true", username],
+            input=password.encode(),
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 class CommandHandler:
@@ -30,6 +49,15 @@ class CommandHandler:
     def execute(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a simple (non-streaming) command."""
         cmd = msg["cmd"]
+
+        # Check if this command needs authentication
+        if cmd in AUTH_REQUIRED:
+            password = msg.get("password")
+            if not password:
+                return {"ok": False, "error": "Password required", "auth_required": True}
+            username = self.chroot._get_username()
+            if not verify_password(username, password):
+                return {"ok": False, "error": "Authentication failed"}
 
         dispatch = {
             "list":            self._cmd_list,
@@ -65,6 +93,17 @@ class CommandHandler:
             yield {"ok": False, "error": "Missing 'args' field"}
             return
 
+        # @base operations require authentication
+        if overlay == "@base":
+            password = msg.get("password")
+            if not password:
+                yield {"ok": False, "error": "Password required for @base operations", "auth_required": True}
+                return
+            username = self.chroot._get_username()
+            if not verify_password(username, password):
+                yield {"ok": False, "error": "Authentication failed"}
+                return
+
         root = self._resolve_overlay_path(overlay)
         if root is None:
             yield {"ok": False, "error": f"Overlay '{overlay}' not found"}
@@ -81,6 +120,15 @@ class CommandHandler:
         overlay = msg.get("overlay")
         if not overlay:
             return None
+
+        # @base operations require authentication
+        if overlay == "@base":
+            password = msg.get("password")
+            if not password:
+                return None
+            username = self.chroot._get_username()
+            if not verify_password(username, password):
+                return None
 
         root = self._resolve_overlay_path(overlay)
         if root is None:
@@ -250,7 +298,7 @@ class CommandHandler:
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot, streaming stdout/stderr."""
         username = self.chroot._get_username()
-        cmd = ["chroot", root, "su", "-", username, "-c"]
+        cmd = [CHROOT_BIN, root, "su", "-", username, "-c"]
 
         if len(args) == 1:
             cmd.append(args[0])

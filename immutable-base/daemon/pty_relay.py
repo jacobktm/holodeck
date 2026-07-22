@@ -6,11 +6,13 @@ import signal
 import struct
 import fcntl
 import termios
+import shutil
 import logging
 from typing import Dict, Any
 
 log = logging.getLogger("immutable-daemon")
 
+CHROOT_BIN = shutil.which("chroot") or "/usr/sbin/chroot"
 RESIZE_PREFIX = b"\x1b[8;"
 RESIZE_SUFFIX = b"t"
 
@@ -54,13 +56,13 @@ class PtyRelay:
             if self.args:
                 cmd_str = " ".join(self.args)
                 exec_cmd = [
-                    "chroot", self.root,
+                    CHROOT_BIN, self.root,
                     "su", "-", self.username,
                     "-c", cmd_str,
                 ]
             else:
                 exec_cmd = [
-                    "chroot", self.root,
+                    CHROOT_BIN, self.root,
                     "su", "-", self.username,
                 ]
 
@@ -74,7 +76,7 @@ class PtyRelay:
                 "LANG": "en_US.UTF-8",
             }
 
-            os.execve("/usr/bin/chroot", exec_cmd, env)
+            os.execve(chroot_bin, exec_cmd, env)
             os._exit(127)
 
         # Parent process (daemon)

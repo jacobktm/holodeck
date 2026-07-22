@@ -35,6 +35,12 @@ def connect() -> socket.socket:
     return sock
 
 
+def get_password():
+    """Prompt for password (no echo)."""
+    import getpass
+    return getpass.getpass("Password: ")
+
+
 def send_command(cmd: dict) -> dict:
     """Send a command to the daemon and return the response."""
     sock = connect()
@@ -59,6 +65,9 @@ def send_command(cmd: dict) -> dict:
 def cmd_simple(args: dict):
     """Send a simple command and print the output."""
     result = send_command(args)
+    if result.get("auth_required"):
+        args["password"] = get_password()
+        result = send_command(args)
     if result.get("ok"):
         print(result.get("output", ""))
     else:
@@ -70,16 +79,18 @@ def cmd_run(overlay: str, run_args: list):
     """Run a non-interactive command with streaming output."""
     sock = connect()
     try:
-        msg = json.dumps({
+        cmd = {
             "cmd": "run",
             "overlay": overlay,
             "args": run_args,
             "env": {"TERM": os.environ.get("TERM", "xterm-256color")},
-        }, separators=(",", ":")) + "\n"
+        }
+        msg = json.dumps(cmd, separators=(",", ":")) + "\n"
         sock.sendall(msg.encode("utf-8"))
 
         exit_code = 1
         buf = b""
+        auth_checked = False
         while True:
             chunk = sock.recv(4096)
             if not chunk:
@@ -94,6 +105,17 @@ def cmd_run(overlay: str, run_args: list):
                     event = json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError:
                     continue
+
+                # Check for auth required on first response
+                if not auth_checked and event.get("auth_required"):
+                    sock.close()
+                    cmd["password"] = get_password()
+                    sock = connect()
+                    msg = json.dumps(cmd, separators=(",", ":")) + "\n"
+                    sock.sendall(msg.encode("utf-8"))
+                    auth_checked = True
+                    continue
+                auth_checked = True
 
                 if "error" in event and not event.get("ok", True):
                     print(f"ERROR: {event['error']}", file=sys.stderr)
@@ -117,11 +139,12 @@ def cmd_shell(overlay: str, shell_args: list):
     sock = connect()
     try:
         # Send PTY request
-        msg = json.dumps({
+        cmd = {
             "cmd": "pty",
             "overlay": overlay,
             "args": shell_args,
-        }, separators=(",", ":")) + "\n"
+        }
+        msg = json.dumps(cmd, separators=(",", ":")) + "\n"
         sock.sendall(msg.encode("utf-8"))
 
         # Read initial response
@@ -137,6 +160,25 @@ def cmd_shell(overlay: str, shell_args: list):
             sys.exit(1)
 
         response = json.loads(buf.decode("utf-8"))
+
+        # Handle auth required
+        if response.get("auth_required"):
+            sock.close()
+            cmd["password"] = get_password()
+            sock = connect()
+            msg = json.dumps(cmd, separators=(",", ":")) + "\n"
+            sock.sendall(msg.encode("utf-8"))
+            buf = b""
+            while True:
+                chunk = sock.recv(1)
+                if not chunk or chunk == b"\n":
+                    break
+                buf += chunk
+            if not buf:
+                print("ERROR: No response from daemon", file=sys.stderr)
+                sys.exit(1)
+            response = json.loads(buf.decode("utf-8"))
+
         if not response.get("ok"):
             print(f"ERROR: {response.get('error', 'Unknown error')}", file=sys.stderr)
             sys.exit(1)
