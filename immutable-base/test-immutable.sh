@@ -4,7 +4,7 @@ set -uo pipefail
 # ── Test Procedure for Immutable Pop!_OS ──
 # Run as root on the installed system.
 # Tests: overlay creation, isolation, @base immutability, reset, @data persistence,
-#        switch/reboot, delete, lock/unlock.
+#        switch/reboot, delete, lock/unlock, shadowing, package version isolation.
 
 POOL="/pool"
 BASE="$POOL/@base"
@@ -14,6 +14,24 @@ TEST_FILE="/tmp/immutable-test-marker-$$"
 PASS=0
 FAIL=0
 SKIP=0
+
+# Package to test shadowing (must be installed in @base)
+TEST_PKG_REMOVE="${TEST_PKG_REMOVE:-tree}"
+
+# Package version isolation testing (optional)
+INSTALL_PKG=""
+INSTALL_REPO=""  # format: owner/repo@branch
+
+# ── Parse args ──
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --test-pkg) TEST_PKG_REMOVE="$2"; shift 2 ;;
+        --install-pkg) INSTALL_PKG="$2"; shift 2 ;;
+        --repo) INSTALL_REPO="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
 
 # ── Helpers ──
 
@@ -478,6 +496,162 @@ if touch "$BASE/tmp/lock-test-$$" 2>/dev/null; then
     log_fail "Write to @base succeeded after lock — immutability broken"
 else
     log_pass "Write to @base correctly denied after lock"
+fi
+
+echo ""
+
+# ════════════════════════════════════════════
+# TEST 10: Package Shadowing
+# ════════════════════════════════════════════
+
+echo "=== Test 10: Package Shadowing ==="
+echo "  Testing with package: $TEST_PKG_REMOVE"
+
+# Ensure the package is installed in @base
+CHROOT_HELPER="$POOL/@overlay-init"
+mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp}
+mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
+mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
+mount -t proc proc "$CHROOT_HELPER/proc" 2>/dev/null || true
+mount --rbind /sys "$CHROOT_HELPER/sys" 2>/dev/null || true
+mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
+mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
+cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
+
+# Check if package exists in base
+if chroot "$CHROOT_HELPER" which "$TEST_PKG_REMOVE" &>/dev/null; then
+    log_pass "Package '$TEST_PKG_REMOVE' exists in base (baseline)"
+else
+    echo "  Installing '$TEST_PKG_REMOVE' in base for test..."
+    chroot "$CHROOT_HELPER" env DEBIAN_FRONTEND=noninteractive apt-get install -y "$TEST_PKG_REMOVE" &>/dev/null
+    if chroot "$CHROOT_HELPER" which "$TEST_PKG_REMOVE" &>/dev/null; then
+        log_pass "Package '$TEST_PKG_REMOVE' installed in base"
+    else
+        log_skip "Could not install '$TEST_PKG_REMOVE' in base — skipping shadowing test"
+        goto_shadow=1
+    fi
+fi
+
+# Unmount base chroot
+umount -R "$CHROOT_HELPER/dev" 2>/dev/null || true
+umount -R "$CHROOT_HELPER/proc" 2>/dev/null || true
+umount -R "$CHROOT_HELPER/sys" 2>/dev/null || true
+umount "$CHROOT_HELPER/run" 2>/dev/null || true
+
+if [ "${goto_shadow:-0}" != "1" ]; then
+    # Remove the package in overlay1
+    echo "  Removing '$TEST_PKG_REMOVE' in overlay $TEST_OVERLAY..."
+    immutable run "$TEST_OVERLAY" bash -c "apt-get remove -y $TEST_PKG_REMOVE &>/dev/null" 2>&1
+
+    # Verify it's gone in overlay1
+    if immutable run "$TEST_OVERLAY" which "$TEST_PKG_REMOVE" &>/dev/null; then
+        log_fail "Package '$TEST_PKG_REMOVE' still exists in $TEST_OVERLAY after removal"
+    else
+        log_pass "Package '$TEST_PKG_REMOVE' removed from $TEST_OVERLAY"
+    fi
+
+    # Verify it still exists in overlay2
+    if immutable run "$TEST_OVERLAY2" which "$TEST_PKG_REMOVE" &>/dev/null; then
+        log_pass "Package '$TEST_PKG_REMOVE' still exists in $TEST_OVERLAY2 (shadowing works)"
+    else
+        log_fail "Package '$TEST_PKG_REMOVE' missing from $TEST_OVERLAY2 — shadowing broken"
+    fi
+
+    # Verify it still exists in base
+    mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp} 2>/dev/null
+    mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
+    mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
+    mount -t proc proc "$CHROOT_HELPER/proc" 2>/dev/null || true
+    mount --rbind /sys "$CHROOT_HELPER/sys" 2>/dev/null || true
+    mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
+    mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
+    cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
+
+    if chroot "$CHROOT_HELPER" which "$TEST_PKG_REMOVE" &>/dev/null; then
+        log_pass "Package '$TEST_PKG_REMOVE' still exists in @base (immutable)"
+    else
+        log_fail "Package '$TEST_PKG_REMOVE' missing from @base — BROKEN"
+    fi
+
+    umount -R "$CHROOT_HELPER/dev" 2>/dev/null || true
+    umount -R "$CHROOT_HELPER/proc" 2>/dev/null || true
+    umount -R "$CHROOT_HELPER/sys" 2>/dev/null || true
+    umount "$CHROOT_HELPER/run" 2>/dev/null || true
+fi
+
+echo ""
+
+# ════════════════════════════════════════════
+# TEST 11: Package Version Isolation
+# ════════════════════════════════════════════
+
+echo "=== Test 11: Package Version Isolation ==="
+
+if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
+    echo "  Package: $INSTALL_PKG"
+    echo "  Repo/Branch: $INSTALL_REPO"
+
+    REPO_URL="https://github.com/${INSTALL_REPO%%@*}"
+    BRANCH="${INSTALL_REPO##*@}"
+
+    # Install the package from the specific branch in overlay1
+    echo "  Installing $INSTALL_PKG from $INSTALL_REPO in $TEST_OVERLAY..."
+    immutable run "$TEST_OVERLAY" bash -c "
+        apt-get update -qq &>/dev/null
+        # Add the repo if not already present
+        if ! apt-cache policy $INSTALL_PKG 2>/dev/null | grep -q '$REPO_URL'; then
+            echo 'deb [trusted=yes] $REPO_URL ./' > /etc/apt/sources.list.d/custom.list
+            apt-get update -qq &>/dev/null
+        fi
+        apt-get install -y --allow-downgrades $INSTALL_PKG &>/dev/null
+    " 2>&1
+
+    # Get version in overlay1
+    OVERLAY1_VER=$(immutable run "$TEST_OVERLAY" bash -c "dpkg -l $INSTALL_PKG 2>/dev/null | tail -1 | awk '{print \$3}'" 2>/dev/null || echo "not installed")
+    echo "  Version in $TEST_OVERLAY: $OVERLAY1_VER"
+
+    if [ "$OVERLAY1_VER" != "not installed" ] && [ -n "$OVERLAY1_VER" ]; then
+        log_pass "Package installed in $TEST_OVERLAY: $OVERLAY1_VER"
+    else
+        log_fail "Package not installed in $TEST_OVERLAY"
+    fi
+
+    # Get version in overlay2 (should be base version or not installed)
+    OVERLAY2_VER=$(immutable run "$TEST_OVERLAY2" bash -c "dpkg -l $INSTALL_PKG 2>/dev/null | tail -1 | awk '{print \$3}'" 2>/dev/null || echo "not installed")
+    echo "  Version in $TEST_OVERLAY2: $OVERLAY2_VER"
+
+    if [ "$OVERLAY1_VER" != "$OVERLAY2_VER" ]; then
+        log_pass "Versions differ: $TEST_OVERLAY=$OVERLAY1_VER vs $TEST_OVERLAY2=$OVERLAY2_VER"
+    else
+        log_fail "Same version in both overlays — version isolation broken"
+    fi
+
+    # Get version in base
+    mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp} 2>/dev/null
+    mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
+    mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
+    mount -t proc proc "$CHROOT_HELPER/proc" 2>/dev/null || true
+    mount --rbind /sys "$CHROOT_HELPER/sys" 2>/dev/null || true
+    mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
+    mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
+    cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
+
+    BASE_VER=$(chroot "$CHROOT_HELPER" bash -c "dpkg -l $INSTALL_PKG 2>/dev/null | tail -1 | awk '{print \$3}'" 2>/dev/null || echo "not installed")
+    echo "  Version in @base: $BASE_VER"
+
+    if [ "$OVERLAY1_VER" != "$BASE_VER" ]; then
+        log_pass "Overlay version ($OVERLAY1_VER) differs from base ($BASE_VER)"
+    else
+        log_fail "Overlay version matches base — no version override applied"
+    fi
+
+    umount -R "$CHROOT_HELPER/dev" 2>/dev/null || true
+    umount -R "$CHROOT_HELPER/proc" 2>/dev/null || true
+    umount -R "$CHROOT_HELPER/sys" 2>/dev/null || true
+    umount "$CHROOT_HELPER/run" 2>/dev/null || true
+else
+    log_skip "No --install-pkg/--repo specified — skipping version isolation test"
+    echo "  Usage: $0 --install-pkg <name> --repo <owner/repo@branch>"
 fi
 
 echo ""
