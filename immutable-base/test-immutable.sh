@@ -607,8 +607,10 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     " 2>&1
 
     # Get version in overlay1
-    OVERLAY1_VER=$(immutable run "$TEST_OVERLAY" bash -c "dpkg -l $INSTALL_PKG 2>/dev/null | tail -1 | awk '{print \$3}'" 2>/dev/null || echo "not installed")
+    OVERLAY1_VER=$(immutable run "$TEST_OVERLAY" bash -c "dpkg-query -W -f='\${Version}' $INSTALL_PKG 2>/dev/null" || echo "not installed")
     echo "  Version in $TEST_OVERLAY: $OVERLAY1_VER"
+    echo "  apt policy in $TEST_OVERLAY:"
+    immutable run "$TEST_OVERLAY" apt policy "$INSTALL_PKG" 2>&1 | head -10
 
     if [ "$OVERLAY1_VER" != "not installed" ] && [ -n "$OVERLAY1_VER" ]; then
         log_pass "Package installed in $TEST_OVERLAY: $OVERLAY1_VER"
@@ -617,7 +619,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     fi
 
     # Get version in overlay2 (should be base version or not installed)
-    OVERLAY2_VER=$(immutable run "$TEST_OVERLAY2" bash -c "dpkg -l $INSTALL_PKG 2>/dev/null | tail -1 | awk '{print \$3}'" 2>/dev/null || echo "not installed")
+    OVERLAY2_VER=$(immutable run "$TEST_OVERLAY2" bash -c "dpkg-query -W -f='\${Version}' $INSTALL_PKG 2>/dev/null" || echo "not installed")
     echo "  Version in $TEST_OVERLAY2: $OVERLAY2_VER"
 
     if [ "$OVERLAY1_VER" != "$OVERLAY2_VER" ]; then
@@ -636,7 +638,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
     cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
 
-    BASE_VER=$(chroot "$CHROOT_HELPER" bash -c "dpkg -l $INSTALL_PKG 2>/dev/null | tail -1 | awk '{print \$3}'" 2>/dev/null || echo "not installed")
+    BASE_VER=$(chroot "$CHROOT_HELPER" bash -c "dpkg-query -W -f='\${Version}' $INSTALL_PKG 2>/dev/null" || echo "not installed")
     echo "  Version in @base: $BASE_VER"
 
     if [ "$OVERLAY1_VER" != "$BASE_VER" ]; then
