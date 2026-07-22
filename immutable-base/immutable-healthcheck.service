@@ -5,7 +5,7 @@ Requires=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/immutable boot-ok
+ExecStart=/usr/local/bin/immutable-healthcheck.sh
 RemainAfterExit=yes
 
 [Install]
