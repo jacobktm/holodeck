@@ -393,8 +393,41 @@ umount "$MOUNT_POINT/run" 2>/dev/null || true
 
 mkdir -p "$MOUNT_POINT/pool"
 mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
-btrfs subvolume snapshot "$MOUNT_POINT/pool/@overlay-init" "$MOUNT_POINT/pool/@base"
+
+# If @base exists, update it in place; otherwise create from @overlay-init
+if [ -d "$MOUNT_POINT/pool/@base" ]; then
+    echo "Updating existing @base..."
+    btrfs property set "$MOUNT_POINT/pool/@base" ro false
+else
+    echo "Creating @base from @overlay-init..."
+    btrfs subvolume snapshot "$MOUNT_POINT/pool/@overlay-init" "$MOUNT_POINT/pool/@base"
+fi
+
+# Mount @base with proper block device for kernel postinst
+mkdir -p "$MOUNT_POINT/pool/@base/tmp"
+mount --bind /dev "$MOUNT_POINT/pool/@base/dev" 2>/dev/null || true
+mount -t devpts devpts "$MOUNT_POINT/pool/@base/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || true
+mount -t proc proc "$MOUNT_POINT/pool/@base/proc" 2>/dev/null || true
+mount --rbind /sys "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
+mount --make-rslave "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
+mount --bind /run "$MOUNT_POINT/pool/@base/run" 2>/dev/null || true
+cp /etc/resolv.conf "$MOUNT_POINT/pool/@base/etc/resolv.conf" 2>/dev/null || true
+
+# Install/update packages in @base (kernel postinst will work with real block device)
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get update -y
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --allow-downgrades
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+
+# Unmount @base
+umount -R "$MOUNT_POINT/pool/@base/dev" 2>/dev/null || true
+umount -R "$MOUNT_POINT/pool/@base/proc" 2>/dev/null || true
+umount -R "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
+umount "$MOUNT_POINT/pool/@base/run" 2>/dev/null || true
+
+# Lock @base
 btrfs property set "$MOUNT_POINT/pool/@base" ro true
+echo "@base updated and locked"
 
 # Create recovery overlay (snapshot of @base, used as fallback for failed boots)
 btrfs subvolume snapshot "$MOUNT_POINT/pool/@base" "$MOUNT_POINT/pool/@overlay-recovery"
