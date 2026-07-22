@@ -701,6 +701,59 @@ fi
 echo ""
 
 # ════════════════════════════════════════════
+# TEST 12: Non-root User Access
+# ════════════════════════════════════════════
+
+echo "=== Test 12: Non-root User Access ==="
+
+TEST_USERNAME="USERNAME"
+
+if id "$TEST_USERNAME" &>/dev/null; then
+    echo "  Testing as user: $TEST_USERNAME"
+
+    # Test immutable run as non-root
+    echo "  Running: immutable run @base id -u (as $TEST_USERNAME)..."
+    RUN_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable run @base id -u" 2>&1) || true
+    RUN_UID=$(echo "$RUN_OUTPUT" | tr -d '[:space:]')
+
+    if [ "$RUN_UID" = "1000" ]; then
+        log_pass "immutable run as non-root drops to user (uid=$RUN_UID)"
+    elif [ -n "$RUN_UID" ]; then
+        log_fail "immutable run as non-root got unexpected uid: $RUN_UID"
+    else
+        log_fail "immutable run as non-root produced no output"
+    fi
+
+    # Test immutable shell as non-root (non-interactive)
+    echo "  Running: immutable shell @base id -u (as $TEST_USERNAME)..."
+    SHELL_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable shell @base id -u" 2>&1) || true
+    SHELL_UID=$(echo "$SHELL_OUTPUT" | tr -d '[:space:]')
+
+    if [ "$SHELL_UID" = "1000" ]; then
+        log_pass "immutable shell as non-root drops to user (uid=$SHELL_UID)"
+    elif [ -n "$SHELL_UID" ]; then
+        log_fail "immutable shell as non-root got unexpected uid: $SHELL_UID"
+    else
+        log_fail "immutable shell as non-root produced no output"
+    fi
+
+    # Verify hostname inside overlay
+    echo "  Running: immutable run @base hostname (as $TEST_USERNAME)..."
+    HOSTNAME_OUT=$(su - "$TEST_USERNAME" -c "immutable run @base hostname" 2>&1) || true
+    echo "  Hostname inside overlay: $HOSTNAME_OUT"
+
+    if [ -n "$HOSTNAME_OUT" ]; then
+        log_pass "immutable run as non-root can execute commands"
+    else
+        log_fail "immutable run as non-root failed to execute"
+    fi
+else
+    log_skip "User '$TEST_USERNAME' not found — skipping non-root test"
+fi
+
+echo ""
+
+# ════════════════════════════════════════════
 # SUMMARY
 # ════════════════════════════════════════════
 
