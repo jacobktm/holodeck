@@ -717,7 +717,7 @@ fi
 if [ "$shadow_ok" = "1" ]; then
     # Remove the package in overlay1
     echo "  Removing '$TEST_PKG_REMOVE' in overlay $TEST_OVERLAY..."
-    immutable run "$TEST_OVERLAY" bash -c "apt-get remove -y $TEST_PKG_REMOVE &>/dev/null" 2>&1
+    immutable run "$TEST_OVERLAY" sudo bash -c "apt-get remove -y $TEST_PKG_REMOVE &>/dev/null" 2>&1
 
     # Verify it's gone in overlay1
     if immutable run "$TEST_OVERLAY" test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
@@ -764,7 +764,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
         root_cmd mkdir -p "$(dirname "$KEYRING_DST")"
         root_cmd cp "$KEYRING_SRC" "$KEYRING_DST"
     fi
-    immutable run "$TEST_OVERLAY" bash -c "
+    immutable run "$TEST_OVERLAY" sudo bash -c "
         # Add popdev staging repo in DEB822 format (matching docker_ops.py pattern)
         printf '%s\n' \
             'X-Repolib-ID: popdev-${BRANCH}' \
@@ -842,51 +842,57 @@ fi
 echo ""
 
 # ════════════════════════════════════════════
-# TEST 12: Non-root User Access
+# TEST 12: Non-root User Access to Overlays
 # ════════════════════════════════════════════
 
-echo "=== Test 12: Non-root User Access ==="
+echo "=== Test 12: Non-root User Access to Overlays ==="
 
 TEST_USERNAME="USERNAME"
 
 if id "$TEST_USERNAME" &>/dev/null; then
     echo "  Testing as user: $TEST_USERNAME"
 
-    # Test immutable run as non-root
-    echo "  Running: immutable run @base id -u (as $TEST_USERNAME)..."
-    RUN_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable run @base id -u" 2>&1) || true
+    # Test immutable run as non-root — should see correct user context
+    echo "  Running: immutable run $TEST_OVERLAY id -u (as $TEST_USERNAME)..."
+    RUN_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY id -u" 2>&1) || true
     RUN_UID=$(echo "$RUN_OUTPUT" | tr -d '[:space:]')
 
     if [ "$RUN_UID" = "1000" ]; then
-        log_pass "immutable run as non-root drops to user (uid=$RUN_UID)"
+        log_pass "immutable run as non-root runs as user (uid=$RUN_UID)"
     elif [ -n "$RUN_UID" ]; then
         log_fail "immutable run as non-root got unexpected uid: $RUN_UID"
     else
         log_fail "immutable run as non-root produced no output"
     fi
 
-    # Test immutable shell as non-root (non-interactive)
-    echo "  Running: immutable shell @base id -u (as $TEST_USERNAME)..."
-    SHELL_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable shell @base id -u" 2>&1) || true
-    SHELL_UID=$(echo "$SHELL_OUTPUT" | tr -d '[:space:]')
+    # Test HOME is correct inside overlay
+    echo "  Running: immutable run $TEST_OVERLAY pwd (as $TEST_USERNAME)..."
+    HOME_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY pwd" 2>&1) || true
+    echo "  pwd inside overlay: $HOME_OUTPUT"
 
-    if [ "$SHELL_UID" = "1000" ]; then
-        log_pass "immutable shell as non-root drops to user (uid=$SHELL_UID)"
-    elif [ -n "$SHELL_UID" ]; then
-        log_fail "immutable shell as non-root got unexpected uid: $SHELL_UID"
+    if echo "$HOME_OUTPUT" | grep -q "/home/$TEST_USERNAME"; then
+        log_pass "HOME is correct inside overlay: $HOME_OUTPUT"
     else
-        log_fail "immutable shell as non-root produced no output"
+        log_fail "HOME is wrong inside overlay: $HOME_OUTPUT (expected /home/$TEST_USERNAME)"
     fi
 
-    # Verify hostname inside overlay
-    echo "  Running: immutable run @base hostname (as $TEST_USERNAME)..."
-    HOSTNAME_OUT=$(su - "$TEST_USERNAME" -c "immutable run @base hostname" 2>&1) || true
-    echo "  Hostname inside overlay: $HOSTNAME_OUT"
+    # Test sudo apt works inside overlay (the real use case)
+    echo "  Running: immutable run $TEST_OVERLAY sudo apt-get install -y tree (as $TEST_USERNAME)..."
+    APT_OUTPUT=$(su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY sudo apt-get install -y tree" 2>&1) || true
+    echo "$APT_OUTPUT" | tail -3
 
-    if [ -n "$HOSTNAME_OUT" ]; then
-        log_pass "immutable run as non-root can execute commands"
+    if su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY which tree" 2>/dev/null | grep -q tree; then
+        log_pass "sudo apt-get install works inside overlay as non-root"
     else
-        log_fail "immutable run as non-root failed to execute"
+        log_fail "sudo apt-get install failed inside overlay as non-root"
+    fi
+
+    # Verify installed package doesn't exist in @base
+    echo "  Verifying 'tree' not in @base..."
+    if su - "$TEST_USERNAME" -c "immutable run @base which tree" 2>/dev/null | grep -q tree; then
+        log_fail "tree found in @base — isolation broken"
+    else
+        log_pass "tree not in @base (only in overlay)"
     fi
 else
     log_skip "User '$TEST_USERNAME' not found — skipping non-root test"
