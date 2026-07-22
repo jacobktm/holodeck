@@ -337,7 +337,7 @@ class CommandHandler:
         return {"ok": True, "output": f"Recovery overlay created at {recovery}"}
 
     def _exec_in_chroot(self, root, args, env, mount_ctx):
-        """Execute a command inside the chroot, streaming stdout/stderr."""
+        """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""
         username = self.chroot._get_username()
         cmd = [CHROOT_BIN, root, "su", "-", username, "-c"]
 

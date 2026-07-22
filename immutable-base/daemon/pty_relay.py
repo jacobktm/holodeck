@@ -54,17 +54,14 @@ class PtyRelay:
             if slave_fd > 2:
                 os.close(slave_fd)
 
-            if self.args:
-                exec_cmd = [
-                    CHROOT_BIN, self.root,
-                    "su", "-", self.username,
-                    "-c", shlex.join(self.args),
-                ]
-            else:
-                exec_cmd = [
-                    CHROOT_BIN, self.root,
-                    "su", "-", self.username,
-                ]
+            exec_cmd = [
+                CHROOT_BIN, self.root,
+                "su", "-", self.username,
+                "-c", shlex.join(self.args),
+            ] if self.args else [
+                CHROOT_BIN, self.root,
+                "su", "-", self.username,
+            ]
 
             env = {
                 "HOME": f"/home/{self.username}",

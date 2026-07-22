@@ -184,6 +184,12 @@ cat > "$MOUNT_POINT/etc/immutable.conf" <<CONF
 USERNAME=$USERNAME
 CONF
 
+# Passwordless sudo inside chroots (overlays snapshot this)
+cat > "$MOUNT_POINT/etc/sudoers.d/immutable-$USERNAME" <<SUDOERS
+$USERNAME ALL=(ALL) NOPASSWD: ALL
+SUDOERS
+chmod 0440 "$MOUNT_POINT/etc/sudoers.d/immutable-$USERNAME"
+
 # ── Kernelstub config (must exist before apt postinst runs) ──
 
 mkdir -p "$MOUNT_POINT/etc/kernelstub"
