@@ -613,7 +613,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     # Install the package from the specific branch in overlay1
     echo "  Installing $INSTALL_PKG from $INSTALL_REPO in $TEST_OVERLAY..."
     # Copy popdev keyring into overlay directly
-    KEYRING_SRC="$(dirname "$0")/popdev-archive-keyring.gpg"
+    KEYRING_SRC="$(dirname "$(dirname "$0")")/lib/popdev-archive-keyring.gpg"
     KEYRING_DST="$POOL/@overlay-$TEST_OVERLAY/etc/apt/keyrings/popdev-archive-keyring.gpg"
     if [ -f "$KEYRING_SRC" ]; then
         mkdir -p "$(dirname "$KEYRING_DST")"
