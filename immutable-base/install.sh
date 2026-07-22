@@ -416,7 +416,7 @@ cp /etc/resolv.conf "$MOUNT_POINT/pool/@base/etc/resolv.conf" 2>/dev/null || tru
 # Install/update packages in @base (kernel postinst will work with real block device)
 chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get update -y
 chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --allow-downgrades
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades $HW_PACKAGES
 chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
 
 # Unmount @base
