@@ -2,9 +2,13 @@
 set -uo pipefail
 
 # ── Test Procedure for Immutable Pop!_OS ──
-# Run as root on the installed system.
 # Tests: overlay creation, isolation, @base immutability, reset, @data persistence,
 #        switch/reboot, delete, lock/unlock, shadowing, package version isolation.
+
+# Re-exec as root if not already
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
