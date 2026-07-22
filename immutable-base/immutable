@@ -389,7 +389,9 @@ _chroot_overlay() {
     # Mount API filesystems
     mkdir -p "$root"/{dev,dev/pts,proc,sys,run,tmp}
     mount --bind /dev "$root/dev" 2>/dev/null || true
-    mount --bind /dev/pts "$root/dev/pts" 2>/dev/null || true
+    # Mount devpts separately — bind mount after /dev can fail
+    mount -t devpts devpts "$root/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || \
+        mount --bind /dev/pts "$root/dev/pts" 2>/dev/null || true
     mount -t proc proc "$root/proc" 2>/dev/null || true
     mount --rbind /sys "$root/sys" 2>/dev/null || true
     mount --make-rslave "$root/sys" 2>/dev/null || true

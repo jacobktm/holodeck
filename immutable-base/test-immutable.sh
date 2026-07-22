@@ -511,7 +511,8 @@ echo "  Testing with package: $TEST_PKG_REMOVE"
 CHROOT_HELPER="$POOL/@overlay-init"
 mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp}
 mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
-mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
+mount -t devpts devpts "$CHROOT_HELPER/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || \
+    mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
 mount -t proc proc "$CHROOT_HELPER/proc" 2>/dev/null || true
 mount --rbind /sys "$CHROOT_HELPER/sys" 2>/dev/null || true
 mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
@@ -560,7 +561,8 @@ if [ "${goto_shadow:-0}" != "1" ]; then
     # Verify it still exists in base
     mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp} 2>/dev/null
     mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
-    mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
+    mount -t devpts devpts "$CHROOT_HELPER/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || \
+        mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
     mount -t proc proc "$CHROOT_HELPER/proc" 2>/dev/null || true
     mount --rbind /sys "$CHROOT_HELPER/sys" 2>/dev/null || true
     mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
@@ -647,7 +649,8 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     # Compare against base
     mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp} 2>/dev/null
     mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
-    mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
+    mount -t devpts devpts "$CHROOT_HELPER/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || \
+        mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
     mount -t proc proc "$CHROOT_HELPER/proc" 2>/dev/null || true
     mount --rbind /sys "$CHROOT_HELPER/sys" 2>/dev/null || true
     mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
