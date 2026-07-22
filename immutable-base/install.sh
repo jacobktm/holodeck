@@ -418,6 +418,8 @@ chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get upda
 chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --allow-downgrades
 chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades $HW_PACKAGES
 chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y
+chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get clean -y
 
 # Unmount @base
 umount -R "$MOUNT_POINT/pool/@base/dev" 2>/dev/null || true
