@@ -16,7 +16,7 @@ FAIL=0
 SKIP=0
 
 # Package to test shadowing (must be installed in @base)
-TEST_PKG_REMOVE="${TEST_PKG_REMOVE:-tree}"
+TEST_PKG_REMOVE="${TEST_PKG_REMOVE:-curl}"
 
 # Package version isolation testing (optional)
 INSTALL_PKG=""
