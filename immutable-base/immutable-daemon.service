@@ -6,7 +6,7 @@ RefuseManualStart=yes
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -m daemon.daemon
+ExecStart=/usr/bin/python3 /usr/lib/immutable/daemon.py
 WorkingDirectory=/usr/lib/immutable
 User=root
 Group=root

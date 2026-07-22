@@ -10,9 +10,12 @@ import signal
 import socket
 import logging
 
-from .protocol import Message, ProtocolError
-from .commands import CommandHandler
-from .pty_relay import PtyRelay
+# Add daemon directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from protocol import Message, ProtocolError
+from commands import CommandHandler
+from pty_relay import PtyRelay
 
 SOCKET_FD = 3
 SOCKET_PATH = "/run/immutable/daemon.sock"

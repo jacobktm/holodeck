@@ -6,9 +6,9 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, Generator, List
 
-from .btrfs_ops import BtrfsOps
-from .boot_ops import BootOps
-from .chroot_ops import ChrootMount
+from btrfs_ops import BtrfsOps
+from boot_ops import BootOps
+from chroot_ops import ChrootMount
 
 
 POOL = os.environ.get("IMMUTABLE_POOL", "/pool")
