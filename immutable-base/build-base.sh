@@ -213,6 +213,11 @@ KERNELSTUB
     # Hostname
     echo "immutable-pop" > "$ROOTFS_DIR/etc/hostname"
 
+    # Remove cups-filters parallel port config — modules don't exist in
+    # the debootstrap rootfs, causing systemd-modules-load.service to
+    # timeout for 90s during boot.
+    rm -f "$ROOTFS_DIR/etc/modules-load.d/cups-filters.conf"
+
     # Locale
     echo "en_US.UTF-8 UTF-8" > "$ROOTFS_DIR/etc/locale.gen"
     chroot "$ROOTFS_DIR" locale-gen 2>/dev/null || true
