@@ -699,14 +699,14 @@ echo "=== Test 10: Package Shadowing ==="
 echo "  Testing with package: $TEST_PKG_REMOVE"
 
 # Verify package exists in @base
-if immutable run @base test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
+SHADOW_ERR=$(immutable run @base test -x "/usr/bin/$TEST_PKG_REMOVE" 2>&1) && shadow_ok=1 || shadow_ok=0
+if [ "$shadow_ok" = "1" ]; then
     log_pass "Package '$TEST_PKG_REMOVE' exists in @base (baseline)"
 else
-    log_skip "Package '$TEST_PKG_REMOVE' not in @base — skipping shadowing test"
-    goto_shadow=1
+    log_fail "Package '$TEST_PKG_REMOVE' check failed: $SHADOW_ERR"
 fi
 
-if [ "${goto_shadow:-0}" != "1" ]; then
+if [ "$shadow_ok" = "1" ]; then
     # Remove the package in overlay1
     echo "  Removing '$TEST_PKG_REMOVE' in overlay $TEST_OVERLAY..."
     immutable run "$TEST_OVERLAY" bash -c "apt-get remove -y $TEST_PKG_REMOVE &>/dev/null" 2>&1
