@@ -21,6 +21,7 @@ UBUNTU_KEY="/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"
 
 # Base packages — minimal desktop session, no hardware-specific packages
 DISTRO_PKGS="systemd-sysv init dbus sudo network-manager \
+    linux-system76 \
     cosmic-session cosmic-term"
 
 # Utilities
