@@ -440,6 +440,31 @@ echo "Created recovery overlay"
 cp "$(dirname "$0")/immutable" "$MOUNT_POINT/usr/local/bin/immutable"
 chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
 
+# ── Install immutable daemon ──
+
+# Create immutable group
+chroot "$MOUNT_POINT" groupadd immutable 2>/dev/null || true
+
+# Add USERNAMEuser to immutable group
+chroot "$MOUNT_POINT" usermod -aG immutable USERNAME2>/dev/null || true
+
+# Install daemon modules
+mkdir -p "$MOUNT_POINT/usr/lib/immutable"
+cp "$(dirname "$0")/daemon/"*.py "$MOUNT_POINT/usr/lib/immutable/"
+touch "$MOUNT_POINT/usr/lib/immutable/__init__.py"
+
+# Install daemon systemd units
+cp "$(dirname "$0")/immutable-daemon.service" "$MOUNT_POINT/etc/systemd/system/"
+cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
+
+# Create socket directory
+mkdir -p "$MOUNT_POINT/run/immutable"
+
+# Enable daemon socket
+chroot "$MOUNT_POINT" systemctl enable immutable-daemon.socket 2>/dev/null || true
+
+echo "Installed immutable daemon"
+
 # ── Install systemd services for boot recovery ──
 
 cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/usr/local/bin/immutable-boot-counter.sh"
