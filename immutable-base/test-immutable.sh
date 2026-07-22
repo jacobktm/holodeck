@@ -606,29 +606,41 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
         apt-get install -y --allow-downgrades $INSTALL_PKG &>/dev/null
     " 2>&1
 
-    # Get version in overlay1
-    OVERLAY1_VER=$(immutable run "$TEST_OVERLAY" bash -c "dpkg-query -W -f='\${Version}' $INSTALL_PKG 2>/dev/null" || echo "not installed")
-    echo "  Version in $TEST_OVERLAY: $OVERLAY1_VER"
-    echo "  apt policy in $TEST_OVERLAY:"
-    immutable run "$TEST_OVERLAY" apt policy "$INSTALL_PKG" 2>&1 | head -10
+    # Compare actual binaries by checksum, not version strings
+    # (versions may not change with every commit)
+    BIN_PATH=$(immutable run "$TEST_OVERLAY" which "$INSTALL_PKG" 2>/dev/null || true)
+    echo "  Binary path in $TEST_OVERLAY: ${BIN_PATH:-not found}"
 
-    if [ "$OVERLAY1_VER" != "not installed" ] && [ -n "$OVERLAY1_VER" ]; then
-        log_pass "Package installed in $TEST_OVERLAY: $OVERLAY1_VER"
+    if [ -n "$BIN_PATH" ]; then
+        OVERLAY1_HASH=$(immutable run "$TEST_OVERLAY" sha256sum "$BIN_PATH" 2>/dev/null | awk '{print $1}')
+        echo "  SHA256 in $TEST_OVERLAY: $OVERLAY1_HASH"
     else
-        log_fail "Package not installed in $TEST_OVERLAY"
+        OVERLAY1_HASH=""
+        echo "  Package not installed in $TEST_OVERLAY"
     fi
 
-    # Get version in overlay2 (should be base version or not installed)
-    OVERLAY2_VER=$(immutable run "$TEST_OVERLAY2" bash -c "dpkg-query -W -f='\${Version}' $INSTALL_PKG 2>/dev/null" || echo "not installed")
-    echo "  Version in $TEST_OVERLAY2: $OVERLAY2_VER"
-
-    if [ "$OVERLAY1_VER" != "$OVERLAY2_VER" ]; then
-        log_pass "Versions differ: $TEST_OVERLAY=$OVERLAY1_VER vs $TEST_OVERLAY2=$OVERLAY2_VER"
+    BIN_PATH2=$(immutable run "$TEST_OVERLAY2" which "$INSTALL_PKG" 2>/dev/null || true)
+    if [ -n "$BIN_PATH2" ]; then
+        OVERLAY2_HASH=$(immutable run "$TEST_OVERLAY2" sha256sum "$BIN_PATH2" 2>/dev/null | awk '{print $1}')
+        echo "  SHA256 in $TEST_OVERLAY2: $OVERLAY2_HASH"
     else
-        log_fail "Same version in both overlays — version isolation broken"
+        OVERLAY2_HASH=""
+        echo "  Package not installed in $TEST_OVERLAY2"
     fi
 
-    # Get version in base
+    if [ -n "$OVERLAY1_HASH" ] && [ -n "$OVERLAY2_HASH" ]; then
+        if [ "$OVERLAY1_HASH" != "$OVERLAY2_HASH" ]; then
+            log_pass "Binaries differ between overlays (SHA256: $OVERLAY1_HASH vs $OVERLAY2_HASH)"
+        else
+            log_fail "Identical binaries in both overlays — version isolation broken"
+        fi
+    elif [ -n "$OVERLAY1_HASH" ] && [ -z "$OVERLAY2_HASH" ]; then
+        log_pass "Package only in $TEST_OVERLAY (not in $TEST_OVERLAY2)"
+    else
+        log_fail "Package not found in $TEST_OVERLAY"
+    fi
+
+    # Compare against base
     mkdir -p "$CHROOT_HELPER"/{dev,dev/pts,proc,sys,run,tmp} 2>/dev/null
     mount --bind /dev "$CHROOT_HELPER/dev" 2>/dev/null || true
     mount --bind /dev/pts "$CHROOT_HELPER/dev/pts" 2>/dev/null || true
@@ -638,13 +650,23 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
     cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
 
-    BASE_VER=$(chroot "$CHROOT_HELPER" bash -c "dpkg-query -W -f='\${Version}' $INSTALL_PKG 2>/dev/null" || echo "not installed")
-    echo "  Version in @base: $BASE_VER"
-
-    if [ "$OVERLAY1_VER" != "$BASE_VER" ]; then
-        log_pass "Overlay version ($OVERLAY1_VER) differs from base ($BASE_VER)"
+    BASE_BIN=$(chroot "$CHROOT_HELPER" which "$INSTALL_PKG" 2>/dev/null || true)
+    if [ -n "$BASE_BIN" ]; then
+        BASE_HASH=$(chroot "$CHROOT_HELPER" sha256sum "$BASE_BIN" 2>/dev/null | awk '{print $1}')
+        echo "  SHA256 in @base: $BASE_HASH"
     else
-        log_fail "Overlay version matches base — no version override applied"
+        BASE_HASH=""
+        echo "  Package not in @base"
+    fi
+
+    if [ -n "$OVERLAY1_HASH" ] && [ -n "$BASE_HASH" ]; then
+        if [ "$OVERLAY1_HASH" != "$BASE_HASH" ]; then
+            log_pass "Overlay binary ($OVERLAY1_HASH) differs from base ($BASE_HASH)"
+        else
+            log_fail "Overlay binary matches base — no binary override applied"
+        fi
+    elif [ -z "$BASE_HASH" ] && [ -n "$OVERLAY1_HASH" ]; then
+        log_pass "Package only in overlay, not in base"
     fi
 
     umount -R "$CHROOT_HELPER/dev" 2>/dev/null || true
