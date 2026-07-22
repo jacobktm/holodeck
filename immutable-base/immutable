@@ -1,489 +1,311 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Immutable Pop!_OS overlay management CLI.
 
-# ── Immutable Pop!_OS: Overlay Management CLI ──
+Connects to the immutable-daemon over a Unix socket.
+Runs as any user in the 'immutable' group.
+"""
+import sys
+import os
+import json
+import socket
+import struct
+import signal
+import select
+import tty
+import termios
 
-# Re-exec as root if not already
-if [ "$(id -u)" -ne 0 ]; then
-    exec sudo "$0" "$@"
-fi
+VERSION = "0.4.0"
+SOCKET_PATH = "/run/immutable/daemon.sock"
 
-VERSION="0.3.0"
-POOL="${IMMUTABLE_POOL:-/pool}"
-BASE_SUBVOL="@base"
-DATA_SUBVOL="@data"
-SNAPSHOTS_SUBVOL="@snapshots"
-OVERLAY_PREFIX="@overlay-"
-RECOVERY_OVERLAY="recovery"
-BOOT_COUNTER="$POOL/$DATA_SUBVOL/boot-counter"
-BOOT_OK_MARKER="$POOL/$DATA_SUBVOL/boot-ok"
-BOOT_THRESHOLD=3
 
-# If @data has its own copy of this script, run that instead.
-# This lets users update the CLI once in @data and have all overlays see it.
-_DATA_SCRIPT="$POOL/$DATA_SUBVOL/immutable"
-if [ "$0" != "$_DATA_SCRIPT" ] && [ -f "$_DATA_SCRIPT" ] && [ -x "$_DATA_SCRIPT" ]; then
-    exec "$_DATA_SCRIPT" "$@"
-fi
+def connect() -> socket.socket:
+    """Connect to the daemon socket."""
+    if not os.path.exists(SOCKET_PATH):
+        print("ERROR: Daemon not running. Start with: systemctl start immutable-daemon.socket",
+              file=sys.stderr)
+        sys.exit(1)
 
-# ── Helpers ──
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(SOCKET_PATH)
+    except ConnectionRefusedError:
+        print("ERROR: Cannot connect to daemon. Is it running?", file=sys.stderr)
+        print("  systemctl start immutable-daemon.socket", file=sys.stderr)
+        sys.exit(1)
+    return sock
 
-IMMUTABLE_CONF="/etc/immutable.conf"
 
-get_username() {
-    if [ -f "$IMMUTABLE_CONF" ]; then
-        local user
-        user=$(grep '^USERNAME=' "$IMMUTABLE_CONF" | cut -d= -f2)
-        [ -n "$user" ] && echo "$user" && return
-    fi
-    # Fallback: find first non-root user in /home
-    local user
-    for d in /home/*; do
-        [ -d "$d" ] || continue
-        user=$(basename "$d")
-        [ "$user" = "root" ] && continue
-        echo "$user"
-        return
-    done
-    echo "USERNAME"  # last resort
-}
+def send_command(cmd: dict) -> dict:
+    """Send a command to the daemon and return the response."""
+    sock = connect()
+    try:
+        msg = json.dumps(cmd, separators=(",", ":")) + "\n"
+        sock.sendall(msg.encode("utf-8"))
 
-usage() {
-    cat <<EOF
-immutable v${VERSION} — Overlay management for immutable Pop!_OS
+        buf = b""
+        while True:
+            chunk = sock.recv(1)
+            if not chunk or chunk == b"\n":
+                break
+            buf += chunk
+
+        if buf:
+            return json.loads(buf.decode("utf-8"))
+        return {"ok": False, "error": "No response from daemon"}
+    finally:
+        sock.close()
+
+
+def cmd_simple(args: dict):
+    """Send a simple command and print the output."""
+    result = send_command(args)
+    if result.get("ok"):
+        print(result.get("output", ""))
+    else:
+        print(f"ERROR: {result.get('error', 'Unknown error')}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_run(overlay: str, run_args: list):
+    """Run a non-interactive command with streaming output."""
+    sock = connect()
+    try:
+        msg = json.dumps({
+            "cmd": "run",
+            "overlay": overlay,
+            "args": run_args,
+            "env": {"TERM": os.environ.get("TERM", "xterm-256color")},
+        }, separators=(",", ":")) + "\n"
+        sock.sendall(msg.encode("utf-8"))
+
+        exit_code = 1
+        buf = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    continue
+
+                if "error" in event and not event.get("ok", True):
+                    print(f"ERROR: {event['error']}", file=sys.stderr)
+                    sys.exit(1)
+                elif event.get("stream") == "stdout":
+                    sys.stdout.write(event.get("data", ""))
+                    sys.stdout.flush()
+                elif event.get("stream") == "stderr":
+                    sys.stderr.write(event.get("data", ""))
+                    sys.stderr.flush()
+                elif event.get("type") == "done":
+                    exit_code = event.get("exit_code", 1)
+
+        sys.exit(exit_code)
+    finally:
+        sock.close()
+
+
+def cmd_shell(overlay: str, shell_args: list):
+    """Open an interactive shell session."""
+    sock = connect()
+    try:
+        # Send PTY request
+        msg = json.dumps({
+            "cmd": "pty",
+            "overlay": overlay,
+            "args": shell_args,
+        }, separators=(",", ":")) + "\n"
+        sock.sendall(msg.encode("utf-8"))
+
+        # Read initial response
+        buf = b""
+        while True:
+            chunk = sock.recv(1)
+            if not chunk or chunk == b"\n":
+                break
+            buf += chunk
+
+        if not buf:
+            print("ERROR: No response from daemon", file=sys.stderr)
+            sys.exit(1)
+
+        response = json.loads(buf.decode("utf-8"))
+        if not response.get("ok"):
+            print(f"ERROR: {response.get('error', 'Unknown error')}", file=sys.stderr)
+            sys.exit(1)
+
+        # Enter raw terminal mode
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            _relay_loop(sock, fd)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    finally:
+        sock.close()
+
+
+def _relay_loop(sock, stdin_fd):
+    """Relay bytes between stdin/stdout and the daemon socket."""
+    sock.setblocking(False)
+    os.set_blocking(stdin_fd, False)
+
+    resize_buf = b""
+
+    while True:
+        try:
+            readable, _, _ = select.select([stdin_fd, sock], [], [], 0.1)
+        except (ValueError, OSError):
+            break
+
+        for fd in readable:
+            try:
+                if fd == stdin_fd:
+                    data = os.read(stdin_fd, 4096)
+                    if not data:
+                        # EOF on stdin
+                        try:
+                            sock.sendall(b"")
+                        except (BrokenPipeError, OSError):
+                            pass
+                        return
+
+                    # Check for Ctrl+C
+                    if data == b"\x03":
+                        try:
+                            sock.sendall(data)
+                        except (BrokenPipeError, OSError):
+                            return
+                        continue
+
+                    # Check for Ctrl+D
+                    if data == b"\x04":
+                        try:
+                            sock.sendall(b"")
+                        except (BrokenPipeError, OSError):
+                            pass
+                        return
+
+                    # Send resize escape on terminal size change
+                    # (Could detect SIGWINCH here for production)
+                    try:
+                        sock.sendall(data)
+                    except (BrokenPipeError, OSError):
+                        return
+
+                elif fd == sock:
+                    data = sock.recv(4096)
+                    if not data:
+                        return
+                    os.write(sys.stdout.fileno(), data)
+
+            except (OSError, BrokenPipeError):
+                return
+
+
+def print_help():
+    """Print usage information."""
+    print(f"""immutable v{VERSION} -- Overlay management for immutable Pop!_OS
 
 Usage:
   immutable create <name>       Create a new overlay (snapshot of @base)
-  immutable shell <name>        Chroot into an overlay
-  immutable run <name> <cmd>    Run a command in an overlay
-  immutable list                Show all overlays
-  immutable switch <name>       Set default boot overlay (needs reboot)
-  immutable reset <name>        Wipe overlay, re-snapshot from @base
-  immutable delete <name>       Remove an overlay
-  immutable status              Show current overlay and boot config
-  immutable lock                Make @base read-only (disable apt)
-  immutable unlock              Make @base writable (enable apt)
-  immutable recovery            Switch to recovery overlay and reboot
-  immutable reset-recovery      Recreate recovery overlay from @base
-  immutable healthcheck         Check boot health (called by systemd)
-  immutable boot-ok             Mark current boot as healthy
-  immutable update              Update CLI in @data (all overlays see it)
-EOF
-}
-
-die() { echo "ERROR: $*" >&2; exit 1; }
-
-require_root() {
-    [ "$(id -u)" -eq 0 ] || die "Must run as root"
-}
-
-pool_mounted() {
-    mountpoint -q "$POOL" 2>/dev/null
-}
-
-ensure_pool() {
-    require_root
-    if ! pool_mounted; then
-        # Find the BTRFS partition
-        local dev=$(findmnt -n -o SOURCE / 2>/dev/null || true)
-        if [ -z "$dev" ]; then
-            die "Cannot determine root device. Is the system installed?"
-        fi
-        local fs_type=$(findmnt -n -o FSTYPE / 2>/dev/null || true)
-        if [ "$fs_type" != "btrfs" ]; then
-            die "Root filesystem is not BTRFS (found $fs_type)"
-        fi
-        mkdir -p "$POOL"
-        mount -o subvolid=5 "$dev" "$POOL"
-    fi
-}
-
-check_pool() {
-    # Like ensure_pool but doesn't require root — just verifies pool is accessible
-    if ! pool_mounted; then
-        die "Pool not mounted at $POOL. Run as root or check fstab."
-    fi
-}
-
-base_path() { echo "$POOL/$BASE_SUBVOL"; }
-overlay_path() {
-    local name="$1"
-    case "$name" in
-        @base)   echo "$POOL/$BASE_SUBVOL" ;;
-        @data)   echo "$POOL/$DATA_SUBVOL" ;;
-        *)       echo "$POOL/$OVERLAY_PREFIX$name" ;;
-    esac
-}
-data_path() { echo "$POOL/$DATA_SUBVOL"; }
-snapshots_path() { echo "$POOL/$SNAPSHOTS_SUBVOL"; }
-
-# ── Commands ──
-
-cmd_create() {
-    local name="${1:?Usage: immutable create <name>}"
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] && die "Overlay '$name' already exists"
-
-    local src=$(base_path)
-    [ -d "$src" ] || die "Base system not found at $src"
-
-    echo "Creating overlay '$name' from @base..."
-    btrfs subvolume snapshot "$src" "$dst"
-    echo "Created: $dst"
-    echo ""
-    echo "Next steps:"
-    echo "  immutable shell $name      # enter overlay"
-    echo "  immutable switch $name     # set as boot default (needs reboot)"
-}
-
-cmd_shell() {
-    local name="${1:?Usage: immutable shell <name> [command...]}"
-    shift
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] || die "Overlay '$name' not found. Use 'immutable list' to see available overlays."
-
-    echo "Entering overlay '$name'..."
-    if [ $# -gt 0 ]; then
-        _chroot_overlay "$dst" "$@"
-    else
-        _chroot_overlay "$dst" /bin/bash
-    fi
-}
-
-cmd_run() {
-    local name="${1:?Usage: immutable run <name> <cmd>}"
-    shift
-    [ $# -eq 0 ] && die "No command specified"
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] || die "Overlay '$name' not found"
-
-    _chroot_overlay "$dst" "$@"
-}
-
-cmd_list() {
-    check_pool
-
-    echo "Overlays:"
-    echo ""
-
-    # Show base
-    local base=$(base_path)
-    if [ -d "$base" ]; then
-        local ro=$(btrfs property get "$base" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
-        echo "  @base (read-only: $ro) — $base"
-    fi
-
-    # Show overlays (use btrfs subvolume list to avoid glob issues with @ in names)
-    local count=0
-    local list_output
-    list_output=$(btrfs subvolume list "$POOL" 2>/dev/null || true)
-    local path name full size
-    while IFS= read -r line; do
-        path=$(echo "$line" | grep -oP 'path \K.*')
-        case "$path" in
-            @overlay-*)
-                name="${path#@overlay-}"
-                full="$POOL/$path"
-                size=$(du -sh "$full" 2>/dev/null | cut -f1)
-                echo "  $name ($size) — $full"
-                count=$((count + 1))
-                ;;
-        esac
-    done <<< "$list_output"
-    [ "$count" -eq 0 ] && echo "  (none)"
-
-    # Show data
-    local data=$(data_path)
-    if [ -d "$data" ]; then
-        echo ""
-        echo "  @data — $data"
-    fi
-
-    # Show current boot overlay
-    echo ""
-    _show_boot_config
-}
-
-cmd_switch() {
-    local name="${1:?Usage: immutable switch <name>}"
-    require_root
-    _switch_to "$name"
-    echo "Reboot to activate."
-}
-
-cmd_reset() {
-    local name="${1:?Usage: immutable reset <name>}"
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] || die "Overlay '$name' not found"
-
-    local src=$(base_path)
-
-    echo "Resetting overlay '$name' from @base..."
-    btrfs subvolume delete "$dst"
-    btrfs subvolume snapshot "$src" "$dst"
-    echo "Reset complete: $dst"
-}
-
-cmd_delete() {
-    local name="${1:?Usage: immutable delete <name>}"
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] || die "Overlay '$name' not found"
-
-    # Don't delete the active boot overlay
-    local current=$(cat /boot/efi/loader/entries/immutable.conf 2>/dev/null | grep -o 'subvol=[^ ]*' | head -1 | cut -d= -f2 || true)
-    if [ "$current" = "@overlay-${name}" ]; then
-        die "Cannot delete active boot overlay. Switch to another first."
-    fi
-
-    echo "Deleting overlay '$name'..."
-    btrfs subvolume delete "$dst"
-    echo "Deleted."
-}
-
-cmd_status() {
-    check_pool
-    echo "=== Immutable Status ==="
-    echo ""
-    _show_boot_config
-    echo ""
-    echo "=== Subvolumes ==="
-    btrfs subvolume list "$POOL" 2>/dev/null || echo "(unable to list)"
-}
-
-cmd_lock() {
-    ensure_pool
-    local base=$(base_path)
-    [ -d "$base" ] || die "Base system not found"
-
-    echo "Making @base read-only..."
-    btrfs property set "$base" ro true
-    echo "@base is now read-only. Use 'immutable unlock' to make writable."
-}
-
-cmd_unlock() {
-    ensure_pool
-    local base=$(base_path)
-    [ -d "$base" ] || die "Base system not found"
-
-    echo "Making @base writable..."
-    btrfs property set "$base" ro false
-    echo "@base is now writable. Run apt update/upgrade as needed."
-    echo "Use 'immutable lock' when done."
-}
-
-cmd_recovery() {
-    require_root
-
-    local recovery=$(overlay_path "$RECOVERY_OVERLAY")
-    if [ ! -d "$recovery" ]; then
-        echo "Recovery overlay not found. Creating from @base..."
-        ensure_pool
-        btrfs subvolume snapshot "$(base_path)" "$recovery"
-    fi
-
-    echo "Switching to recovery overlay..."
-    _switch_to "$RECOVERY_OVERLAY"
-
-    echo "Rebooting into recovery..."
-    reboot
-}
-
-cmd_reset_recovery() {
-    ensure_pool
-    local recovery=$(overlay_path "$RECOVERY_OVERLAY")
-    local src=$(base_path)
-
-    if [ -d "$recovery" ]; then
-        echo "Deleting old recovery overlay..."
-        btrfs subvolume delete "$recovery"
-    fi
-
-    echo "Creating recovery overlay from @base..."
-    btrfs subvolume snapshot "$src" "$recovery"
-    echo "Recovery overlay created: $recovery"
-}
-
-cmd_healthcheck() {
-    # Run as a systemd service. Exit 0 = healthy, exit 1 = unhealthy.
-    # Check that essential services can be reached.
-    local healthy=true
-
-    # Check if / is writable (overlay is working)
-    if ! touch /.healthcheck-test 2>/dev/null; then
-        echo "FAIL: root filesystem not writable"
-        healthy=false
-    fi
-    rm -f /.healthcheck-test 2>/dev/null
-
-    # Check that systemd is functioning
-    if ! systemctl is-system-running --quiet 2>/dev/null; then
-        local state=$(systemctl is-system-running 2>/dev/null || echo "unknown")
-        if [ "$state" = "degraded" ]; then
-            echo "WARN: systemd in degraded state (non-fatal)"
-        elif [ "$state" = "maintenance" ]; then
-            echo "FAIL: systemd in maintenance mode"
-            healthy=false
-        fi
-    fi
-
-    if $healthy; then
-        echo "Boot healthcheck: PASS"
-        exit 0
-    else
-        echo "Boot healthcheck: FAIL"
-        exit 1
-    fi
-}
-
-cmd_boot_ok() {
-    # Mark current boot as healthy — reset boot counter
-    check_pool
-    local data=$(data_path)
-    mkdir -p "$data" 2>/dev/null || true
-
-    echo "1" > "$BOOT_OK_MARKER" 2>/dev/null || true
-    echo "0" > "$BOOT_COUNTER" 2>/dev/null || true
-    echo "Boot marked as healthy."
-}
-
-cmd_update() {
-    # Copy this script to @data so all overlays use the updated version
-    require_root
-    check_pool
-
-    local data=$(data_path)
-    mkdir -p "$data" 2>/dev/null || true
-
-    local dest="$data/immutable"
-    local src="$0"
-
-    # If running from @data (the exec redirect), use the shim at /usr/local/bin
-    if [ "$src" = "$dest" ]; then
-        src="/usr/local/bin/immutable"
-    fi
-
-    cp "$src" "$dest"
-    chmod +x "$dest"
-    echo "CLI updated in @data. All overlays will use this version."
-}
-
-# ── Internal functions ──
-
-_switch_to() {
-    local name="${1:?Usage: immutable switch <name>}"
-    ensure_pool
-
-    local dst=$(overlay_path "$name")
-    [ -d "$dst" ] || die "Overlay '$name' not found"
-
-    local entry="/boot/efi/loader/entries/immutable.conf"
-    if [ -f "$entry" ]; then
-        sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-${name}|g" "$entry"
-        echo "Boot entry updated to: @overlay-${name}"
-    else
-        echo "Boot entry not found at $entry"
-        echo "Manually set rootflags=subvol=@overlay-${name} in your boot config."
-    fi
-}
-
-_chroot_overlay() {
-    local root="$1"
-    shift
-
-    local username
-    username=$(get_username)
-
-    # Mount API filesystems
-    mkdir -p "$root"/{dev,dev/pts,proc,sys,run,tmp}
-    mount --bind /dev "$root/dev" 2>/dev/null || true
-    # Mount devpts separately — bind mount after /dev can fail
-    mount -t devpts devpts "$root/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || \
-        mount --bind /dev/pts "$root/dev/pts" 2>/dev/null || true
-    mount -t proc proc "$root/proc" 2>/dev/null || true
-    mount --rbind /sys "$root/sys" 2>/dev/null || true
-    mount --make-rslave "$root/sys" 2>/dev/null || true
-    mount --bind /run "$root/run" 2>/dev/null || true
-    mount --bind /tmp "$root/tmp" 2>/dev/null || true
-
-    # Mount data partition into home
-    local data=$(data_path)
-    if [ -d "$data" ]; then
-        local home_dir="$root/home/$username"
-        mkdir -p "$home_dir"
-        for dir in Documents Downloads Pictures Videos Music; do
-            mkdir -p "$home_dir/$dir"
-            mount --bind "$data/$dir" "$home_dir/$dir" 2>/dev/null || true
-        done
-        # Persist dotfiles that should survive overlay reverts
-        for dotfile in .bash_history .profile .bashrc .gitconfig; do
-            [ -f "$data/$dotfile" ] || touch "$data/$dotfile"
-            mount --bind "$data/$dotfile" "$home_dir/$dotfile" 2>/dev/null || true
-        done
-    fi
-
-    # DNS resolution
-    cp /etc/resolv.conf "$root/etc/resolv.conf" 2>/dev/null || true
-
-    # Enter chroot as the user
-    local rc=0
-    if [ $# -gt 0 ]; then
-        chroot "$root" su - "$username" -c "$*" || rc=$?
-    else
-        chroot "$root" su - "$username" || rc=$?
-    fi
-
-    # Cleanup mounts
-    umount -R "$root/dev" 2>/dev/null || true
-    umount -R "$root/proc" 2>/dev/null || true
-    umount -R "$root/sys" 2>/dev/null || true
-    umount "$root/run" 2>/dev/null || true
-    umount "$root/tmp" 2>/dev/null || true
-    for dir in Documents Downloads Pictures Videos Music; do
-        umount "$root/home/$username/$dir" 2>/dev/null || true
-    done
-    for dotfile in .bash_history .profile .bashrc .gitconfig; do
-        umount "$root/home/$username/$dotfile" 2>/dev/null || true
-    done
-    return $rc
-}
-
-_show_boot_config() {
-    local entry="/boot/efi/loader/entries/immutable.conf"
-    if [ -f "$entry" ]; then
-        local subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
-        echo "Boot overlay: ${subvol:-unknown}"
-    else
-        echo "Boot config: not found (system not installed?)"
-    fi
-}
-
-# ── Main ──
-
-case "${1:-}" in
-    create)          shift; cmd_create "$@" ;;
-    shell)           shift; cmd_shell "$@" ;;
-    run)             shift; cmd_run "$@" ;;
-    list)            shift; cmd_list "$@" ;;
-    switch)          shift; cmd_switch "$@" ;;
-    reset)           shift; cmd_reset "$@" ;;
-    delete)          shift; cmd_delete "$@" ;;
-    status)          shift; cmd_status "$@" ;;
-    lock)            shift; cmd_lock "$@" ;;
-    unlock)          shift; cmd_unlock "$@" ;;
-    recovery)        shift; cmd_recovery "$@" ;;
-    reset-recovery)  shift; cmd_reset_recovery "$@" ;;
-    healthcheck)     shift; cmd_healthcheck "$@" ;;
-    boot-ok)         shift; cmd_boot_ok "$@" ;;
-    -h|--help|help|"") usage ;;
-    *) die "Unknown command: $1 (try 'immutable help')" ;;
-esac
+  immutable shell <name>        Open interactive shell in overlay
+  immutable run <name> <cmd>    Run command in overlay (non-interactive)
+  immutable list                List all overlays
+  immutable switch <name>       Set overlay as boot default (needs reboot)
+  immutable reset <name>        Reset overlay to @base state
+  immutable delete <name>       Delete an overlay
+  immutable status              Show system status
+  immutable lock                Lock @base (read-only)
+  immutable unlock              Unlock @base (writable)
+  immutable recovery            Switch to recovery overlay
+  immutable reset-recovery      Reset recovery overlay from @base
+  immutable healthcheck         Check boot health
+  immutable boot-ok             Mark boot as successful
+  immutable update              Update CLI from @data
+  immutable help                Show this help""")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print_help()
+        sys.exit(0)
+
+    cmd = sys.argv[1]
+
+    if cmd in ("help", "--help", "-h"):
+        print_help()
+    elif cmd == "list":
+        cmd_simple({"cmd": "list"})
+    elif cmd == "status":
+        cmd_simple({"cmd": "status"})
+    elif cmd == "healthcheck":
+        cmd_simple({"cmd": "healthcheck"})
+    elif cmd == "boot-ok":
+        cmd_simple({"cmd": "boot-ok"})
+    elif cmd == "lock":
+        cmd_simple({"cmd": "lock"})
+    elif cmd == "unlock":
+        cmd_simple({"cmd": "unlock"})
+    elif cmd == "recovery":
+        cmd_simple({"cmd": "switch", "name": "recovery"})
+    elif cmd == "reset-recovery":
+        cmd_simple({"cmd": "reset-recovery"})
+    elif cmd == "create":
+        if len(sys.argv) < 3:
+            print("Usage: immutable create <name>", file=sys.stderr)
+            sys.exit(1)
+        cmd_simple({"cmd": "create", "name": sys.argv[2]})
+    elif cmd == "delete":
+        if len(sys.argv) < 3:
+            print("Usage: immutable delete <name>", file=sys.stderr)
+            sys.exit(1)
+        cmd_simple({"cmd": "delete", "name": sys.argv[2]})
+    elif cmd == "reset":
+        if len(sys.argv) < 3:
+            print("Usage: immutable reset <name>", file=sys.stderr)
+            sys.exit(1)
+        cmd_simple({"cmd": "reset", "name": sys.argv[2]})
+    elif cmd == "switch":
+        if len(sys.argv) < 3:
+            print("Usage: immutable switch <name>", file=sys.stderr)
+            sys.exit(1)
+        cmd_simple({"cmd": "switch", "name": sys.argv[2]})
+    elif cmd == "run":
+        if len(sys.argv) < 4:
+            print("Usage: immutable run <name> <command>", file=sys.stderr)
+            sys.exit(1)
+        cmd_run(sys.argv[2], sys.argv[3:])
+    elif cmd == "shell":
+        if len(sys.argv) < 3:
+            print("Usage: immutable shell <name>", file=sys.stderr)
+            sys.exit(1)
+        cmd_shell(sys.argv[2], sys.argv[3:])
+    elif cmd == "update":
+        # Copy self to @data
+        import shutil
+        data_path = "/pool/@data/immutable"
+        try:
+            shutil.copy2(sys.argv[0], data_path)
+            os.chmod(data_path, 0o755)
+            print(f"Updated: {data_path}")
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

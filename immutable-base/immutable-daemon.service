@@ -1,0 +1,30 @@
+[Unit]
+Description=Immutable overlay management daemon
+After=local-fs.target
+Requires=local-fs.target
+RefuseManualStart=yes
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m daemon.daemon
+WorkingDirectory=/usr/lib/immutable
+User=root
+Group=root
+
+ProtectSystem=strict
+ReadWritePaths=/pool /boot/efi /run/immutable /tmp
+ProtectHome=yes
+NoNewPrivileges=no
+PrivateTmp=no
+RestrictNamespaces=no
+RestrictSUIDSGID=no
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN CAP_MKNOD CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN CAP_MKNOD CAP_SETUID CAP_SETGID
+
+LimitNOFILE=65536
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
