@@ -3,6 +3,11 @@ set -euo pipefail
 
 # ── Immutable Pop!_OS: Overlay Management CLI ──
 
+# Re-exec as root if not already
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+
 VERSION="0.3.0"
 POOL="${IMMUTABLE_POOL:-/pool}"
 BASE_SUBVOL="@base"
@@ -429,12 +434,12 @@ _chroot_overlay() {
     # DNS resolution
     cp /etc/resolv.conf "$root/etc/resolv.conf" 2>/dev/null || true
 
-    # Enter chroot
+    # Enter chroot as the user
     local rc=0
     if [ $# -gt 0 ]; then
-        chroot "$root" "$@" || rc=$?
+        chroot "$root" su - "$username" -c "$*" || rc=$?
     else
-        chroot "$root" /bin/bash || rc=$?
+        chroot "$root" su - "$username" || rc=$?
     fi
 
     # Cleanup mounts
