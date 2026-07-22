@@ -405,6 +405,11 @@ _chroot_overlay() {
             mkdir -p "$home_dir/$dir"
             mount --bind "$data/$dir" "$home_dir/$dir" 2>/dev/null || true
         done
+        # Persist dotfiles that should survive overlay reverts
+        for dotfile in .bash_history .profile .bashrc .gitconfig; do
+            [ -f "$data/$dotfile" ] || touch "$data/$dotfile"
+            mount --bind "$data/$dotfile" "$home_dir/$dotfile" 2>/dev/null || true
+        done
     fi
 
     # DNS resolution
@@ -425,6 +430,9 @@ _chroot_overlay() {
     umount "$root/tmp" 2>/dev/null || true
     for dir in Documents Downloads Pictures Videos Music; do
         umount "$root/home/$username/$dir" 2>/dev/null || true
+    done
+    for dotfile in .bash_history .profile .bashrc .gitconfig; do
+        umount "$root/home/$username/$dotfile" 2>/dev/null || true
     done
 }
 
