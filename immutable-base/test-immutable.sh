@@ -84,6 +84,23 @@ echo "Test overlay names: $TEST_OVERLAY, $TEST_OVERLAY2"
 echo "PID marker: $$"
 echo ""
 
+# ── Clean up stale test overlays from previous runs ──
+echo "=== Cleaning stale overlays ==="
+for stale in $(btrfs subvolume list "$POOL" 2>/dev/null | grep -oP '@overlay-test[0-9]*-[0-9]+' | sort -u); do
+    echo "  Removing stale overlay: $stale"
+    btrfs subvolume delete "$POOL/$stale" 2>/dev/null || true
+done
+# Also revert boot entry if stuck on a test overlay
+entry="/boot/efi/loader/entries/immutable.conf"
+if [ -f "$entry" ]; then
+    current_subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
+    if [ -n "$current_subvol" ] && [[ "$current_subvol" == *@overlay-test* ]]; then
+        echo "  Reverting boot entry from $current_subvol to @overlay-init"
+        sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-init|g" "$entry"
+    fi
+fi
+echo ""
+
 # ── Pre-flight checks ──
 
 echo "=== Pre-flight Checks ==="
@@ -192,8 +209,11 @@ echo "  Journal diagnostics:"
 echo "    systemd-modules-load.service:"
 journalctl -b -u systemd-modules-load.service --no-pager 2>&1 | tail -10 | sed 's/^/      /'
 echo ""
-echo "    sysinit.target (last 20 lines):"
-journalctl -b -u sysinit.target --no-pager 2>&1 | tail -20 | sed 's/^/      /'
+echo "    sysinit.target blockers (systemd unit init):"
+journalctl -b -o short-monotonic -u sysinit.target --no-pager 2>&1 | tail -20 | sed 's/^/      /'
+echo ""
+echo "    All sysinit-stage jobs:"
+systemd-analyze blame --no-pager 2>&1 | head -20 | sed 's/^/      /'
 echo ""
 
 # ════════════════════════════════════════════
@@ -542,7 +562,7 @@ echo "=== Test 10: Package Shadowing ==="
 echo "  Testing with package: $TEST_PKG_REMOVE"
 
 # Verify package exists in @base
-if immutable shell @base test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
+if immutable run @base test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
     log_pass "Package '$TEST_PKG_REMOVE' exists in @base (baseline)"
 else
     log_skip "Package '$TEST_PKG_REMOVE' not in @base — skipping shadowing test"
@@ -569,7 +589,7 @@ if [ "${goto_shadow:-0}" != "1" ]; then
     fi
 
     # Verify it still exists in @base
-    if immutable shell @base test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
+    if immutable run @base test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
         log_pass "Package '$TEST_PKG_REMOVE' still exists in @base (immutable)"
     else
         log_fail "Package '$TEST_PKG_REMOVE' missing from @base — BROKEN"
@@ -592,10 +612,30 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
 
     # Install the package from the specific branch in overlay1
     echo "  Installing $INSTALL_PKG from $INSTALL_REPO in $TEST_OVERLAY..."
+    # Copy popdev keyring into overlay directly
+    KEYRING_SRC="$(dirname "$0")/popdev-archive-keyring.gpg"
+    KEYRING_DST="$POOL/@overlay-$TEST_OVERLAY/etc/apt/keyrings/popdev-archive-keyring.gpg"
+    if [ -f "$KEYRING_SRC" ]; then
+        mkdir -p "$(dirname "$KEYRING_DST")"
+        cp "$KEYRING_SRC" "$KEYRING_DST"
+    fi
     immutable run "$TEST_OVERLAY" bash -c "
-        apt-manage add popdev:$BRANCH 2>&1 | tail -5
+        # Add popdev staging repo in DEB822 format (matching docker_ops.py pattern)
+        cat > /etc/apt/sources.list.d/popdev-${BRANCH}.sources <<EOF
+X-Repolib-ID: popdev-${BRANCH}
+X-Repolib-Name: Pop Development Branch ${BRANCH}
+Enabled: yes
+Types: deb
+URIs: http://apt.pop-os.org/staging/${BRANCH}
+Suites: noble
+Components: main
+Signed-By: /etc/apt/keyrings/popdev-archive-keyring.gpg
+EOF
+        # Pin this branch higher than default so its packages win
+        mkdir -p /etc/apt/preferences.d
+        printf 'Package: *\nPin: release o=pop-os-staging-%s\nPin-Priority: 1002\n' '$BRANCH' > /etc/apt/preferences.d/pop-os-staging-${BRANCH}
         apt-get update -qq 2>&1 | tail -5
-        apt-get install -y --allow-downgrades $INSTALL_PKG 2>&1 | tail -10
+        timeout 60 apt-get install -y --allow-downgrades $INSTALL_PKG 2>&1 | tail -10
     " 2>&1
 
     # Compare actual binaries by checksum, not version strings
@@ -633,7 +673,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     fi
 
     # Compare against base
-    BASE_BIN=$(immutable shell @base bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
+    BASE_BIN=$(immutable run @base bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
     if [ -n "$BASE_BIN" ]; then
         BASE_HASH=$(chroot "$CHROOT_HELPER" sha256sum "$BASE_BIN" 2>/dev/null | awk '{print $1}')
         echo "  SHA256 in @base: $BASE_HASH"
