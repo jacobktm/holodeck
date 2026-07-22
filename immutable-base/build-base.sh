@@ -211,7 +211,7 @@ configure_rootfs_system() {
 KERNELSTUB
 
     # Hostname
-    echo "immutable" > "$ROOTFS_DIR/etc/hostname"
+    echo "immutable-pop" > "$ROOTFS_DIR/etc/hostname"
 
     # Locale
     echo "en_US.UTF-8 UTF-8" > "$ROOTFS_DIR/etc/locale.gen"

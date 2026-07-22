@@ -518,13 +518,13 @@ mount --make-rslave "$CHROOT_HELPER/sys" 2>/dev/null || true
 mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
 cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
 
-# Check if package exists in base
-if chroot "$CHROOT_HELPER" which "$TEST_PKG_REMOVE" &>/dev/null; then
+# Check if package exists in base (use direct path to avoid PATH issues in chroot)
+if chroot "$CHROOT_HELPER" test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
     log_pass "Package '$TEST_PKG_REMOVE' exists in base (baseline)"
 else
     echo "  Installing '$TEST_PKG_REMOVE' in base for test..."
     chroot "$CHROOT_HELPER" env DEBIAN_FRONTEND=noninteractive apt-get install -y "$TEST_PKG_REMOVE" &>/dev/null
-    if chroot "$CHROOT_HELPER" which "$TEST_PKG_REMOVE" &>/dev/null; then
+    if chroot "$CHROOT_HELPER" test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
         log_pass "Package '$TEST_PKG_REMOVE' installed in base"
     else
         log_skip "Could not install '$TEST_PKG_REMOVE' in base — skipping shadowing test"
@@ -543,15 +543,15 @@ if [ "${goto_shadow:-0}" != "1" ]; then
     echo "  Removing '$TEST_PKG_REMOVE' in overlay $TEST_OVERLAY..."
     immutable run "$TEST_OVERLAY" bash -c "apt-get remove -y $TEST_PKG_REMOVE &>/dev/null" 2>&1
 
-    # Verify it's gone in overlay1
-    if immutable run "$TEST_OVERLAY" which "$TEST_PKG_REMOVE" &>/dev/null; then
+    # Verify it's gone in overlay1 (use direct path)
+    if immutable run "$TEST_OVERLAY" test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
         log_fail "Package '$TEST_PKG_REMOVE' still exists in $TEST_OVERLAY after removal"
     else
         log_pass "Package '$TEST_PKG_REMOVE' removed from $TEST_OVERLAY"
     fi
 
-    # Verify it still exists in overlay2
-    if immutable run "$TEST_OVERLAY2" which "$TEST_PKG_REMOVE" &>/dev/null; then
+    # Verify it still exists in overlay2 (use direct path)
+    if immutable run "$TEST_OVERLAY2" test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
         log_pass "Package '$TEST_PKG_REMOVE' still exists in $TEST_OVERLAY2 (shadowing works)"
     else
         log_fail "Package '$TEST_PKG_REMOVE' missing from $TEST_OVERLAY2 — shadowing broken"
@@ -567,7 +567,7 @@ if [ "${goto_shadow:-0}" != "1" ]; then
     mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
     cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
 
-    if chroot "$CHROOT_HELPER" which "$TEST_PKG_REMOVE" &>/dev/null; then
+    if chroot "$CHROOT_HELPER" test -x "/usr/bin/$TEST_PKG_REMOVE" 2>/dev/null; then
         log_pass "Package '$TEST_PKG_REMOVE' still exists in @base (immutable)"
     else
         log_fail "Package '$TEST_PKG_REMOVE' missing from @base — BROKEN"
@@ -597,18 +597,22 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     # Install the package from the specific branch in overlay1
     echo "  Installing $INSTALL_PKG from $INSTALL_REPO in $TEST_OVERLAY..."
     immutable run "$TEST_OVERLAY" bash -c "
-        apt-get update -qq &>/dev/null
+        apt-get update -qq 2>&1 | tail -5
         # Add the repo if not already present
-        if ! apt-cache policy $INSTALL_PKG 2>/dev/null | grep -q '$REPO_URL'; then
-            echo 'deb [trusted=yes] $REPO_URL ./' > /etc/apt/sources.list.d/custom.list
-            apt-get update -qq &>/dev/null
+        if ! apt-cache policy $INSTALL_PKG 2>/dev/null | grep -q 'pop-os'; then
+            echo 'deb [trusted=yes] https://raw.githubusercontent.com/${INSTALL_REPO%%@*}/${BRANCH}/ ./' > /etc/apt/sources.list.d/custom.list
+            echo '  Added custom source:'
+            cat /etc/apt/sources.list.d/custom.list
+            apt-get update -qq 2>&1 | tail -5
+            echo '  apt-cache policy after update:'
+            apt-cache policy $INSTALL_PKG 2>&1 | head -10
         fi
-        apt-get install -y --allow-downgrades $INSTALL_PKG &>/dev/null
+        apt-get install -y --allow-downgrades $INSTALL_PKG 2>&1 | tail -10
     " 2>&1
 
     # Compare actual binaries by checksum, not version strings
     # (versions may not change with every commit)
-    BIN_PATH=$(immutable run "$TEST_OVERLAY" which "$INSTALL_PKG" 2>/dev/null || true)
+    BIN_PATH=$(immutable run "$TEST_OVERLAY" bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
     echo "  Binary path in $TEST_OVERLAY: ${BIN_PATH:-not found}"
 
     if [ -n "$BIN_PATH" ]; then
@@ -619,7 +623,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
         echo "  Package not installed in $TEST_OVERLAY"
     fi
 
-    BIN_PATH2=$(immutable run "$TEST_OVERLAY2" which "$INSTALL_PKG" 2>/dev/null || true)
+    BIN_PATH2=$(immutable run "$TEST_OVERLAY2" bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
     if [ -n "$BIN_PATH2" ]; then
         OVERLAY2_HASH=$(immutable run "$TEST_OVERLAY2" sha256sum "$BIN_PATH2" 2>/dev/null | awk '{print $1}')
         echo "  SHA256 in $TEST_OVERLAY2: $OVERLAY2_HASH"
@@ -650,7 +654,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     mount --bind /run "$CHROOT_HELPER/run" 2>/dev/null || true
     cp /etc/resolv.conf "$CHROOT_HELPER/etc/resolv.conf" 2>/dev/null || true
 
-    BASE_BIN=$(chroot "$CHROOT_HELPER" which "$INSTALL_PKG" 2>/dev/null || true)
+    BASE_BIN=$(chroot "$CHROOT_HELPER" bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
     if [ -n "$BASE_BIN" ]; then
         BASE_HASH=$(chroot "$CHROOT_HELPER" sha256sum "$BASE_BIN" 2>/dev/null | awk '{print $1}')
         echo "  SHA256 in @base: $BASE_HASH"
