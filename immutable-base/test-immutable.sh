@@ -623,21 +623,21 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     fi
     immutable run "$TEST_OVERLAY" bash -c "
         # Add popdev staging repo in DEB822 format (matching docker_ops.py pattern)
-        cat > /etc/apt/sources.list.d/popdev-${BRANCH}.sources <<EOF
-X-Repolib-ID: popdev-${BRANCH}
-X-Repolib-Name: Pop Development Branch ${BRANCH}
-Enabled: yes
-Types: deb
-URIs: http://apt.pop-os.org/staging/${BRANCH}
-Suites: noble
-Components: main
-Signed-By: /etc/apt/keyrings/popdev-archive-keyring.gpg
-EOF
+        printf '%s\n' \
+            'X-Repolib-ID: popdev-${BRANCH}' \
+            'X-Repolib-Name: Pop Development Branch ${BRANCH}' \
+            'Enabled: yes' \
+            'Types: deb' \
+            'URIs: http://apt.pop-os.org/staging/${BRANCH}' \
+            'Suites: noble' \
+            'Components: main' \
+            'Signed-By: /etc/apt/keyrings/popdev-archive-keyring.gpg' \
+            > /etc/apt/sources.list.d/popdev-${BRANCH}.sources
         # Pin this branch higher than default so its packages win
         mkdir -p /etc/apt/preferences.d
-        printf 'Package: *\nPin: release o=pop-os-staging-%s\nPin-Priority: 1002\n' '$BRANCH' > /etc/apt/preferences.d/pop-os-staging-${BRANCH}
+        printf 'Package: *\nPin: release o=pop-os-staging-%s\nPin-Priority: 1002\n' "${BRANCH}" > /etc/apt/preferences.d/pop-os-staging-${BRANCH}
         apt-get update -qq 2>&1 | tail -5
-        timeout 60 apt-get install -y --allow-downgrades $INSTALL_PKG 2>&1 | tail -10
+        timeout 60 apt-get install -y --allow-downgrades ${INSTALL_PKG} 2>&1 | tail -10
     " 2>&1
 
     # Compare actual binaries by checksum, not version strings
