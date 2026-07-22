@@ -33,3 +33,4 @@ install_docker.sh
 .idea/
 .DS_Store
 Thumbs.db
+base-rootfs.tar.zst
