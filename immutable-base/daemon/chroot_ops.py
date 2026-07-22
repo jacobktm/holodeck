@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any
 
 log = logging.getLogger("immutable-daemon")
 
@@ -24,9 +24,9 @@ class ChrootMount:
         username = self._get_username()
         data_path = f"{self.pool}/{self.data_subvol}"
         mounts_done = []
+        data_mounts = []
 
         def _bind(src, dst):
-            os.makedirs(dst, exist_ok=True)
             try:
                 subprocess.run(
                     ["mount", "--bind", src, dst],
@@ -38,8 +38,17 @@ class ChrootMount:
                 log.warning("Mount failed: %s -> %s: %s", src, dst, e)
                 return False
 
+        def _mkdir_p(path):
+            """mkdir -p that handles existing files and read-only filesystems."""
+            try:
+                os.makedirs(path, exist_ok=True)
+            except (FileExistsError, OSError):
+                pass
+
         # API filesystems
+        _mkdir_p(f"{root}/dev")
         _bind("/dev", f"{root}/dev")
+        _mkdir_p(f"{root}/dev/pts")
         _bind("/dev/pts", f"{root}/dev/pts")
 
         subprocess.run(
@@ -60,20 +69,26 @@ class ChrootMount:
         if os.path.ismount(f"{root}/sys"):
             mounts_done.append(f"{root}/sys")
 
+        _mkdir_p(f"{root}/run")
         _bind("/run", f"{root}/run")
+        _mkdir_p(f"{root}/tmp")
         _bind("/tmp", f"{root}/tmp")
 
-        # User data mounts
-        home_dir = f"{root}/home/{username}"
-        data_mounts = []
+        # User data mounts — skip for @base (read-only, mounts won't persist)
+        base_ro = subprocess.run(
+            ["btrfs", "property", "get", root, "ro"],
+            capture_output=True, text=True,
+        )
+        is_readonly = "ro=true" in base_ro.stdout
 
-        if os.path.isdir(data_path):
-            os.makedirs(home_dir, exist_ok=True)
+        if not is_readonly and os.path.isdir(data_path):
+            _mkdir_p(home_dir := f"{root}/home/{username}")
+
             for dir_name in DATA_DIRS:
                 src = f"{data_path}/{dir_name}"
                 dst = f"{home_dir}/{dir_name}"
-                os.makedirs(src, exist_ok=True)
-                os.makedirs(dst, exist_ok=True)
+                _mkdir_p(src)
+                _mkdir_p(dst)
                 if _bind(src, dst):
                     data_mounts.append(dst)
 
@@ -82,6 +97,12 @@ class ChrootMount:
                 dst = f"{home_dir}/{dotfile}"
                 if not os.path.exists(src):
                     Path(src).touch()
+                if os.path.exists(dst) and not os.path.isfile(dst):
+                    # dst is a dir where we expect a file — remove it
+                    try:
+                        os.rmdir(dst)
+                    except OSError:
+                        pass
                 if _bind(src, dst):
                     data_mounts.append(dst)
 
