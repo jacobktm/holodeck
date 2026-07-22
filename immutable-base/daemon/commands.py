@@ -1,6 +1,7 @@
 """Command dispatch and implementations."""
 import os
 import re
+import select
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, Generator, List
@@ -40,8 +41,6 @@ class CommandHandler:
             "lock":            self._cmd_lock,
             "unlock":          self._cmd_unlock,
             "reset-recovery":  self._cmd_reset_recovery,
-            "healthcheck":     self._cmd_healthcheck,
-            "boot-ok":         self._cmd_boot_ok,
         }
 
         handler = dispatch.get(cmd)
@@ -247,42 +246,6 @@ class CommandHandler:
             self.btrfs.delete_subvol(recovery)
         self.btrfs.snapshot(src, recovery)
         return {"ok": True, "output": f"Recovery overlay created at {recovery}"}
-
-    def _cmd_healthcheck(self, msg):
-        healthy = True
-        issues = []
-
-        test = Path("/.healthcheck-test")
-        try:
-            test.touch()
-            test.unlink()
-        except OSError:
-            healthy = False
-            issues.append("Root filesystem not writable")
-
-        result = subprocess.run(
-            ["systemctl", "is-system-running"],
-            capture_output=True, text=True, timeout=5,
-        )
-        state = result.stdout.strip()
-        if state == "maintenance":
-            healthy = False
-            issues.append("Systemd in maintenance mode")
-
-        status = "PASS" if healthy else "FAIL"
-        msg_text = f"Boot healthcheck: {status}"
-        if issues:
-            msg_text += "\n" + "\n".join(f"  - {i}" for i in issues)
-
-        return {"ok": healthy, "output": msg_text}
-
-    def _cmd_boot_ok(self, msg):
-        self._ensure_pool()
-        data = f"{POOL}/{DATA_SUBVOL}"
-        os.makedirs(data, exist_ok=True)
-        Path(f"{data}/boot-ok").write_text("1")
-        Path(f"{data}/boot-counter").write_text("0")
-        return {"ok": True, "output": "Boot marked as healthy."}
 
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot, streaming stdout/stderr."""

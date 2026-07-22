@@ -229,8 +229,6 @@ Usage:
   immutable unlock              Unlock @base (writable)
   immutable recovery            Switch to recovery overlay
   immutable reset-recovery      Reset recovery overlay from @base
-  immutable healthcheck         Check boot health
-  immutable boot-ok             Mark boot as successful
   immutable update              Update CLI from @data
   immutable help                Show this help""")
 
@@ -248,10 +246,6 @@ def main():
         cmd_simple({"cmd": "list"})
     elif cmd == "status":
         cmd_simple({"cmd": "status"})
-    elif cmd == "healthcheck":
-        cmd_simple({"cmd": "healthcheck"})
-    elif cmd == "boot-ok":
-        cmd_simple({"cmd": "boot-ok"})
     elif cmd == "lock":
         cmd_simple({"cmd": "lock"})
     elif cmd == "unlock":
