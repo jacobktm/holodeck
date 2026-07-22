@@ -418,10 +418,11 @@ _chroot_overlay() {
     cp /etc/resolv.conf "$root/etc/resolv.conf" 2>/dev/null || true
 
     # Enter chroot
+    local rc=0
     if [ $# -gt 0 ]; then
-        chroot "$root" "$@"
+        chroot "$root" "$@" || rc=$?
     else
-        chroot "$root" /bin/bash
+        chroot "$root" /bin/bash || rc=$?
     fi
 
     # Cleanup mounts
@@ -436,6 +437,7 @@ _chroot_overlay() {
     for dotfile in .bash_history .profile .bashrc .gitconfig; do
         umount "$root/home/$username/$dotfile" 2>/dev/null || true
     done
+    return $rc
 }
 
 _show_boot_config() {

@@ -24,7 +24,7 @@ DISTRO_PKGS="systemd-sysv init dbus sudo network-manager \
     cosmic-session cosmic-term"
 
 # Utilities
-UTIL_PKGS="btrfs-progs vim less git curl wget htop"
+UTIL_PKGS="btrfs-progs vim less git curl wget htop tree"
 
 # Packages to remove (from iso/config/pop-os/22.04.mk)
 RM_PKGS="snapd ubuntu-session ubuntu-wallpapers"
