@@ -42,6 +42,9 @@ log_fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 log_skip() { echo "  SKIP: $1"; SKIP=$((SKIP + 1)); }
 log_info() { echo "  INFO: $1"; }
 
+# Run a command with sudo (for operations on /pool, /boot/efi, btrfs, mount, etc.)
+root_cmd() { sudo "$@"; }
+
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
@@ -51,7 +54,7 @@ cleanup() {
         local current_subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
         if [ -n "$current_subvol" ] && [[ "$current_subvol" == *@overlay-test* ]]; then
             echo "  Reverting boot entry from $current_subvol to @overlay-init"
-            sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-init|g" "$entry"
+            root_cmd sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-init|g" "$entry"
         fi
     fi
     # Remove test overlays
@@ -60,18 +63,18 @@ cleanup() {
         if [ -d "$path" ]; then
             # Unmount if needed
             for m in $(mount | grep "$path" | awk '{print $3}' | sort -r); do
-                umount "$m" 2>/dev/null || true
+                root_cmd umount "$m" 2>/dev/null || true
             done
-            btrfs subvolume delete "$path" 2>/dev/null && echo "  Removed $name" || echo "  WARNING: Failed to remove $name"
+            root_cmd btrfs subvolume delete "$path" 2>/dev/null && echo "  Removed $name" || echo "  WARNING: Failed to remove $name"
         fi
         # Verify deletion
         if [ -d "$path" ]; then
             echo "  ERROR: $path still exists after deletion!"
-            btrfs subvolume delete "$path" 2>/dev/null || true
+            root_cmd btrfs subvolume delete "$path" 2>/dev/null || true
         fi
     done
     # Remove test data file
-    rm -f "$POOL/@data/$TEST_FILE" 2>/dev/null || true
+    root_cmd rm -f "$POOL/@data/$TEST_FILE" 2>/dev/null || true
     rm -f "/tmp/$TEST_FILE" 2>/dev/null || true
     echo "  Cleanup done."
 }
@@ -88,9 +91,9 @@ echo ""
 
 # ── Clean up stale test overlays from previous runs ──
 echo "=== Cleaning stale overlays ==="
-for stale in $(btrfs subvolume list "$POOL" 2>/dev/null | grep -oP '@overlay-test[0-9]*-[0-9]+' | sort -u); do
+for stale in $(root_cmd btrfs subvolume list "$POOL" 2>/dev/null | grep -oP '@overlay-test[0-9]*-[0-9]+' | sort -u); do
     echo "  Removing stale overlay: $stale"
-    btrfs subvolume delete "$POOL/$stale" 2>/dev/null || true
+    root_cmd btrfs subvolume delete "$POOL/$stale" 2>/dev/null || true
 done
 # Also revert boot entry if stuck on a test overlay
 entry="/boot/efi/loader/entries/immutable.conf"
@@ -98,7 +101,7 @@ if [ -f "$entry" ]; then
     current_subvol=$(grep -o 'subvol=[^ ]*' "$entry" | head -1 | cut -d= -f2 || true)
     if [ -n "$current_subvol" ] && [[ "$current_subvol" == *@overlay-test* ]]; then
         echo "  Reverting boot entry from $current_subvol to @overlay-init"
-        sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-init|g" "$entry"
+        root_cmd sed -i "s|rootflags=subvol=[^ ]*|rootflags=subvol=@overlay-init|g" "$entry"
     fi
 fi
 echo ""
@@ -106,12 +109,6 @@ echo ""
 # ── Pre-flight checks ──
 
 echo "=== Pre-flight Checks ==="
-
-# Check running as root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "FATAL: Must run as root"; exit 1
-fi
-log_pass "Running as root"
 
 # Check BTRFS root
 ROOT_FS=$(findmnt -n -o FSTYPE / 2>/dev/null)
@@ -127,8 +124,8 @@ if mountpoint -q "$POOL" 2>/dev/null; then
 else
     # Try to mount it
     ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null)
-    mkdir -p "$POOL"
-    mount -o subvolid=5 "$ROOT_DEV" "$POOL" 2>/dev/null
+    root_cmd mkdir -p "$POOL"
+    root_cmd mount -o subvolid=5 "$ROOT_DEV" "$POOL" 2>/dev/null
     if mountpoint -q "$POOL" 2>/dev/null; then
         log_pass "/pool mounted (was not mounted)"
     else
@@ -144,7 +141,7 @@ else
 fi
 
 # Check @base is read-only
-BASE_RO=$(btrfs property get "$BASE" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
+BASE_RO=$(root_cmd root_cmd btrfs property get "$BASE" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
 if [ "$BASE_RO" = "true" ]; then
     log_pass "@base is read-only"
 else
@@ -406,7 +403,7 @@ else
 fi
 
 # Verify it's a snapshot
-SUBVOL_ID=$(btrfs subvolume list "$POOL" 2>/dev/null | grep "@overlay-$TEST_OVERLAY" | awk '{print $2}')
+SUBVOL_ID=$(root_cmd btrfs subvolume list "$POOL" 2>/dev/null | grep "@overlay-$TEST_OVERLAY" | awk '{print $2}')
 if [ -n "$SUBVOL_ID" ]; then
     log_pass "Overlay is a BTRFS subvolume (ID: $SUBVOL_ID)"
 else
@@ -421,7 +418,7 @@ echo "$LIST_OUTPUT"
 echo "$LIST_OUTPUT" | grep -q "$TEST_OVERLAY" && log_pass "Overlay appears in 'immutable list'" || {
     log_fail "Overlay missing from 'immutable list'"
     echo "  --- btrfs subvolume list raw ---"
-    btrfs subvolume list /pool 2>&1
+    root_cmd btrfs subvolume list /pool 2>&1
     echo "  --- grep test ---"
     echo "$LIST_OUTPUT" | grep -i "overlay" || echo "(no overlay lines found)"
     echo "  --- end debug ---"
@@ -438,7 +435,7 @@ echo "=== Test 3: Overlay Isolation ==="
 # Create a marker file in the overlay
 MARKER="immutable-test-$$-$(date +%s)"
 echo "  Writing marker '$MARKER' to overlay $TEST_OVERLAY"
-echo "$MARKER" > "$OVERLAY_PATH/tmp/$MARKER" 2>/dev/null
+root_cmd sh -c "echo '$MARKER' > '$OVERLAY_PATH/tmp/$MARKER'" 2>/dev/null
 
 if [ -f "$OVERLAY_PATH/tmp/$MARKER" ]; then
     log_pass "Marker file written to overlay"
@@ -477,8 +474,8 @@ fi
 
 # Try to write to @base directly
 echo "  Attempting write to @base (should fail)..."
-if touch "$BASE/tmp/test-readonly-$$" 2>/dev/null; then
-    rm -f "$BASE/tmp/test-readonly-$$"
+if root_cmd touch "$BASE/tmp/test-readonly-$$" 2>/dev/null; then
+    root_cmd rm -f "$BASE/tmp/test-readonly-$$"
     log_fail "@base is writable when it should be read-only!"
 else
     log_pass "@base is properly read-only (write correctly denied)"
@@ -486,8 +483,8 @@ fi
 
 # Try to create a file via cp
 echo "  Attempting cp to @base (should fail)..."
-if cp /etc/hostname "$BASE/tmp/test-cp-$$" 2>/dev/null; then
-    rm -f "$BASE/tmp/test-cp-$$"
+if root_cmd cp /etc/hostname "$BASE/tmp/test-cp-$$" 2>/dev/null; then
+    root_cmd rm -f "$BASE/tmp/test-cp-$$"
     log_fail "cp to @base succeeded when it should have failed"
 else
     log_pass "cp to @base correctly denied"
@@ -524,7 +521,7 @@ else
 fi
 
 # Re-create marker for next tests
-echo "$MARKER" > "$OVERLAY_PATH/tmp/$MARKER"
+root_cmd sh -c "echo '$MARKER' > '$OVERLAY_PATH/tmp/$MARKER'"
 
 echo ""
 
@@ -538,7 +535,7 @@ echo "=== Test 6: @data Persistence ==="
 # but at the pool level it's $POOL/@data/
 DATA_MARKER="data-test-$$-$(date +%s)"
 echo "  Writing marker '$DATA_MARKER' to @data"
-echo "$DATA_MARKER" > "$POOL/@data/$DATA_MARKER" 2>/dev/null
+root_cmd sh -c "echo '$DATA_MARKER' > '$POOL/@data/$DATA_MARKER'" 2>/dev/null
 
 if [ -f "$POOL/@data/$DATA_MARKER" ]; then
     log_pass "Data marker written to @data"
@@ -649,11 +646,11 @@ echo ""
 
 echo "=== Test 9: Lock/Unlock @base ==="
 
-echo "  @base is currently: $(btrfs property get "$BASE" ro | grep -oP '(?<=ro=)\S+')"
+echo "  @base is currently: $(root_cmd btrfs property get "$BASE" ro | grep -oP '(?<=ro=)\S+')"
 
 echo "  Unlocking @base..."
 immutable unlock 2>&1
-NEW_RO=$(btrfs property get "$BASE" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
+NEW_RO=$(root_cmd btrfs property get "$BASE" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
     if [ "$NEW_RO" = "false" ]; then
     log_pass "@base unlocked (writable)"
 else
@@ -661,8 +658,8 @@ else
 fi
 
 echo "  Writing test file to @base (should succeed)..."
-if touch "$BASE/tmp/unlock-test-$$" 2>/dev/null; then
-    rm -f "$BASE/tmp/unlock-test-$$"
+if root_cmd touch "$BASE/tmp/unlock-test-$$" 2>/dev/null; then
+    root_cmd rm -f "$BASE/tmp/unlock-test-$$"
     log_pass "Write to @base succeeded after unlock"
 else
     log_fail "Write to @base failed even after unlock"
@@ -670,7 +667,7 @@ fi
 
 echo "  Locking @base..."
 immutable lock 2>&1
-NEW_RO=$(btrfs property get "$BASE" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
+NEW_RO=$(root_cmd btrfs property get "$BASE" ro 2>/dev/null | grep -oP '(?<=ro=)\S+')
     if [ "$NEW_RO" = "true" ]; then
     log_pass "@base locked (read-only)"
 else
@@ -678,8 +675,8 @@ else
 fi
 
 echo "  Writing test file to @base (should fail)..."
-if touch "$BASE/tmp/lock-test-$$" 2>/dev/null; then
-    rm -f "$BASE/tmp/lock-test-$$"
+if root_cmd touch "$BASE/tmp/lock-test-$$" 2>/dev/null; then
+    root_cmd rm -f "$BASE/tmp/lock-test-$$"
     log_fail "Write to @base succeeded after lock — immutability broken"
 else
     log_pass "Write to @base correctly denied after lock"
@@ -749,8 +746,8 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     KEYRING_SRC="$REPO_ROOT/lib/popdev-archive-keyring.gpg"
     KEYRING_DST="$POOL/@overlay-$TEST_OVERLAY/etc/apt/keyrings/popdev-archive-keyring.gpg"
     if [ -f "$KEYRING_SRC" ]; then
-        mkdir -p "$(dirname "$KEYRING_DST")"
-        cp "$KEYRING_SRC" "$KEYRING_DST"
+        root_cmd mkdir -p "$(dirname "$KEYRING_DST")"
+        root_cmd cp "$KEYRING_SRC" "$KEYRING_DST"
     fi
     immutable run "$TEST_OVERLAY" bash -c "
         # Add popdev staging repo in DEB822 format (matching docker_ops.py pattern)
@@ -808,7 +805,7 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
     # Compare against base
     BASE_BIN=$(immutable run @base bash -c "test -x /usr/bin/$INSTALL_PKG && echo /usr/bin/$INSTALL_PKG" 2>/dev/null || true)
     if [ -n "$BASE_BIN" ]; then
-        BASE_HASH=$(chroot "$CHROOT_HELPER" sha256sum "$BASE_BIN" 2>/dev/null | awk '{print $1}')
+        BASE_HASH=$(root_cmd chroot "$CHROOT_HELPER" sha256sum "$BASE_BIN" 2>/dev/null | awk '{print $1}')
         echo "  SHA256 in @base: $BASE_HASH"
     else
         BASE_HASH=""
