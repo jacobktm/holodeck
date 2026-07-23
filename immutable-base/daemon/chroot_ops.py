@@ -69,8 +69,46 @@ class ChrootMount:
         if os.path.ismount(f"{root}/sys"):
             mounts_done.append(f"{root}/sys")
 
-        _mkdir_p(f"{root}/run")
-        _bind("/run", f"{root}/run")
+        # --- /run bind mount diagnostics ---
+        host_run_user = "/run/user/1000"
+        log.info("=== /run bind mount diagnostics ===")
+        log.info("Host %s exists=%s", host_run_user, os.path.exists(host_run_user))
+        if os.path.exists(host_run_user):
+            try:
+                st = os.stat(host_run_user)
+                log.info("Host %s uid=%d gid=%d mode=%o", host_run_user, st.st_uid, st.st_gid, st.st_mode & 0o777)
+                log.info("Host %s contents: %s", host_run_user, os.listdir(host_run_user))
+            except OSError as e:
+                log.info("Host %s stat failed: %s", host_run_user, e)
+        log.info("Host /run top-level: %s", sorted(os.listdir("/run")))
+
+        overlay_run = f"{root}/run"
+        if os.path.isdir(overlay_run):
+            try:
+                log.info("Overlay /run before mount: %s", sorted(os.listdir(overlay_run)))
+                overlay_run_user = f"{overlay_run}/user/1000"
+                if os.path.exists(overlay_run_user):
+                    st = os.stat(overlay_run_user)
+                    log.info("Overlay %s before mount: uid=%d gid=%d mode=%o",
+                             overlay_run_user, st.st_uid, st.st_gid, st.st_mode & 0o777)
+            except OSError as e:
+                log.info("Overlay /run inspection failed: %s", e)
+
+        _mkdir_p(overlay_run)
+        run_mounted = _bind("/run", overlay_run)
+
+        log.info("After bind: ismount=%s bind_ok=%s", os.path.ismount(overlay_run), run_mounted)
+        try:
+            log.info("Overlay /run after mount: %s", sorted(os.listdir(overlay_run)))
+            if os.path.exists(f"{overlay_run}/user/1000"):
+                st = os.stat(f"{overlay_run}/user/1000")
+                log.info("Overlay /run/user/1000 after mount: uid=%d gid=%d mode=%o",
+                         st.st_uid, st.st_gid, st.st_mode & 0o777)
+                log.info("Overlay /run/user/1000 contents: %s", os.listdir(f"{overlay_run}/user/1000"))
+        except OSError as e:
+            log.info("Overlay /run after-mount inspection failed: %s", e)
+
+        # --- /tmp bind mount ---
         _mkdir_p(f"{root}/tmp")
         _bind("/tmp", f"{root}/tmp")
 
