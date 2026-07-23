@@ -52,7 +52,11 @@ class Daemon:
             pid = os.fork()
             if pid == 0:
                 sock.close()
+                log.info("Client child %d started, open_fds=%d",
+                         os.getpid(), len(os.listdir(f"/proc/{os.getpid()}/fd")))
                 self._handle_client(client_sock)
+                log.info("Client child %d exiting, open_fds=%d",
+                         os.getpid(), len(os.listdir(f"/proc/{os.getpid()}/fd")))
                 os._exit(0)
             else:
                 client_sock.close()
@@ -134,6 +138,7 @@ class Daemon:
 
     def _handle_pty_session(self, sock, msg):
         """Handle an interactive PTY session."""
+        import time
         mount_ctx = self.handler.setup_chroot(msg)
         if mount_ctx is None:
             if self.handler._last_auth_required:
@@ -151,10 +156,16 @@ class Daemon:
         sock.settimeout(None)
         Message.send(sock, {"ok": True})
 
+        t0 = time.monotonic()
         relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env)
         exit_code = relay.run()
+        t1 = time.monotonic()
+        log.info("PTY relay ran for %.2fs, exit_code=%d", t1 - t0, exit_code)
 
+        t2 = time.monotonic()
         self.handler.teardown_chroot(mount_ctx)
+        t3 = time.monotonic()
+        log.info("teardown_chroot took %.2fs", t3 - t2)
 
         log.info("PTY session ended, exit_code=%d", exit_code)
 
