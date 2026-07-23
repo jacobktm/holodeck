@@ -450,6 +450,10 @@ chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
 mkdir -p "$MOUNT_POINT/usr/share/bash-completion/completions"
 cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/usr/share/bash-completion/completions/immutable"
 
+# Install manpage
+mkdir -p "$MOUNT_POINT/usr/share/man/man1"
+gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/usr/share/man/man1/immutable.1.gz"
+
 # ── Install immutable daemon ──
 
 # Create immutable group

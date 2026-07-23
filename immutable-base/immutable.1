@@ -1,0 +1,184 @@
+.TH IMMUTABLE 1 "2026-07-23" "immutable 0.4.0" "User Commands"
+.SH NAME
+immutable \- overlay management for immutable Pop!_OS
+.SH SYNOPSIS
+.B immutable
+.I command
+.RI [ arguments ]
+.SH DESCRIPTION
+.B immutable
+manages BTRFS overlays on an immutable Pop!_OS installation.
+Overlays are writable snapshots of the read-only base system
+.RB ( @base ),
+allowing isolated testing of different package versions without
+modifying the base system.
+.PP
+The
+.B immutable
+CLI communicates with the
+.BR immutable-daemon (8)
+over a Unix socket
+.RI ( /run/immutable/daemon.sock ).
+Users in the
+.B immutable
+group can manage overlays without root privileges.
+.SH COMMANDS
+.TP
+.BI create " name" [" --from " source]
+Create a new overlay by snapshotting the current boot overlay.
+If
+.BI --from " source"
+is specified, snapshot from
+.I source
+instead.
+.I source
+can be an overlay name,
+.BR @base ,
+or
+.BR @overlay- name.
+.TP
+.BI shell " name"
+Open an interactive shell inside the specified overlay.
+The overlay is mounted with chroot, and the user's session
+environment
+.RI ( WAYLAND_DISPLAY ,
+.BR XDG_RUNTIME_DIR ,
+etc.)
+is forwarded.
+.TP
+.BI run " name command" "..."
+Run a non-interactive command inside the overlay.
+Output streams to the terminal in real time.
+.TP
+.B list
+List all overlays with sizes and paths, plus boot configuration.
+.TP
+.B list-names
+List overlay names, one per line.
+Designed for scripting and shell completions.
+.TP
+.BI switch " name"
+Update the boot entry to use the specified overlay.
+A reboot is required to activate.
+.TP
+.BI reset " name"
+Delete the overlay and re-snapshot it from the current boot
+overlay.
+Useful for starting fresh without creating a new overlay.
+.TP
+.BI delete " name"
+Delete an overlay.
+Cannot delete the currently active boot overlay.
+.TP
+.B status
+Show system status including boot configuration and subvolume
+list.
+.TP
+.B lock
+Make
+.B @base
+read-only.
+Prevents accidental modification of the base system.
+.TP
+.B unlock
+Make
+.B @base
+writable.
+Required for running
+.B apt
+or
+.B dpkg
+on the base system.
+.TP
+.B recovery
+Switch to the recovery overlay.
+.TP
+.B reset-recovery
+Re-snapshot the recovery overlay from
+.BR @base .
+.TP
+.B update
+Copy the
+.B immutable
+CLI to
+.B /pool/@data/immutable
+for persistence across overlays.
+.TP
+.BR help " |" \-\-help " |" \-h
+Show usage information.
+.SH OVERLAYS
+Overlays are BTRFS subvolumes stored under
+.BR /pool/ :
+.TP
+.B @base
+The read-only base system.
+Snapshot of the initial installation.
+.TP
+.B @overlay-\fIname\fR
+A writable snapshot of
+.B @base
+(or another overlay).
+Each overlay has its own
+.BR /usr ,
+.BR /etc ,
+and user configuration directories.
+.TP
+.B @data
+Shared user data
+.RI ( Documents ", " Downloads ", " Pictures ", etc.).
+Bind-mounted into whichever overlay is active.
+.TP
+.B @overlay-recovery
+Fallback overlay used when boot failures are detected.
+.SH EXAMPLES
+ typical workflow:
+.PP
+.RS 4
+.nf
+# Create an overlay for testing
+$ immutable create cosmic-files-pr123
+
+# Enter the overlay
+$ immutable shell cosmic-files-pr123
+
+# Inside: install and test packages
+# apt update && apt install cosmic-files
+
+# Exit shell, then switch boot overlay
+$ immutable switch cosmic-files-pr123
+$ sudo reboot
+.fi
+.RE
+.PP
+If the test fails, switch back:
+.PP
+.RS 4
+.nf
+$ immutable switch init
+$ sudo reboot
+$ immutable delete cosmic-files-pr123
+.fi
+.RE
+.SH ENVIRONMENT
+.TP
+.B IMMUTABLE_PASSWORD
+If set, used for authentication instead of prompting interactively.
+.SH FILES
+.TP
+.B /run/immutable/daemon.sock
+Unix socket for daemon communication.
+.TP
+.B /pool/@base
+Read-only base system.
+.TP
+.B /pool/@data
+Shared user data.
+.TP
+.B /etc/immutable.conf
+System configuration (username).
+.SH SEE ALSO
+.BR immutable-daemon (8),
+.BR btrfs (8),
+.BR systemd-boot (7)
+.SH AUTHORS
+Pop!_OS immutable base team.
