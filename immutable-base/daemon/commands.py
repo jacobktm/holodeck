@@ -338,14 +338,11 @@ class CommandHandler:
 
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""
+        import pwd as _pwd
         username = self.chroot._get_username()
-        cmd = [CHROOT_BIN, root, "su", username, "-c"]
+        pw = _pwd.getpwnam(username)
 
-        if args:
-            cmd.append("bash -l -c " + shlex.quote(shlex.join(args)))
-        else:
-            cmd.append("bash -l")
-
+        # Build environment
         full_env = {
             "HOME": f"/home/{username}",
             "USER": username,
@@ -357,10 +354,21 @@ class CommandHandler:
         }
         full_env.update({k: v for k, v in env.items() if k not in ("HOME", "USER")})
 
-        # Set CWD to user's home inside the overlay.
-        # chroot changes root but preserves CWD, so host path becomes relative.
+        # CWD: user's home inside the overlay (chroot preserves CWD)
         home_dir = f"{root}/home/{username}"
         cwd = home_dir if os.path.isdir(home_dir) else root
+
+        # Exec user's login shell directly — no su wrapper.
+        # preexec_fn drops privileges after fork, before exec.
+        def _drop_privs():
+            os.setgroups([pw.pw_gid])
+            os.setgid(pw.pw_gid)
+            os.setuid(pw.pw_uid)
+
+        if args:
+            cmd = [CHROOT_BIN, root, "/bin/bash", "--login", "-c", shlex.join(args)]
+        else:
+            cmd = [CHROOT_BIN, root, "/bin/bash", "--login"]
 
         proc = subprocess.Popen(
             cmd,
@@ -368,7 +376,7 @@ class CommandHandler:
             stderr=subprocess.PIPE,
             env=full_env,
             cwd=cwd,
-            preexec_fn=os.setsid,
+            preexec_fn=_drop_privs,
         )
 
         fds = {proc.stdout: "stdout", proc.stderr: "stderr"}
