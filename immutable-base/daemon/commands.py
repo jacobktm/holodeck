@@ -342,14 +342,21 @@ class CommandHandler:
         cmd = [CHROOT_BIN, root, "su", username, "-c"]
 
         if len(args) == 1:
-            cmd.append(args[0])
+            cmd.append("bash -l -c " + shlex.join(args))
+        elif len(args) > 1:
+            cmd.append("bash -l -c " + shlex.join(args))
         else:
-            cmd.append(shlex.join(args))
+            cmd.append("bash -l")
 
-        full_env = os.environ.copy()
-        full_env["HOME"] = f"/home/{username}"
-        full_env["USER"] = username
-        full_env["TERM"] = env.get("TERM", os.environ.get("TERM", "xterm-256color"))
+        full_env = {
+            "HOME": f"/home/{username}",
+            "USER": username,
+            "LOGNAME": username,
+            "SHELL": "/bin/bash",
+            "TERM": env.get("TERM", "xterm-256color"),
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG": "en_US.UTF-8",
+        }
         full_env.update({k: v for k, v in env.items() if k not in ("HOME", "USER")})
 
         proc = subprocess.Popen(

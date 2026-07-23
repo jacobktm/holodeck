@@ -44,6 +44,29 @@ def get_password():
     return getpass.getpass("Password: ")
 
 
+# Session vars set by the display manager / systemd-user, not by shell rc files.
+# These must be forwarded from the user's session into the chroot.
+SESSION_ENV_KEYS = [
+    "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE", "XDG_SESSION_ID", "XDG_CURRENT_DESKTOP",
+    "XDG_CONFIG_DIRS", "XDG_DATA_DIRS", "XDG_CACHE_HOME",
+    "DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER",
+    "QT_QPA_PLATFORM", "QT_WAYLAND_DISABLE_WINDOWDECORATION",
+    "GDK_BACKEND", "MOZ_ENABLE_WAYLAND", "SDL_VIDEODRIVER",
+    "COLORTERM", "COSMIC_SESSION", "COSMIC_SESSION_UID",
+]
+
+
+def get_session_env() -> dict:
+    """Collect session environment variables to forward into the chroot."""
+    env = {}
+    for key in SESSION_ENV_KEYS:
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    return env
+
+
 def send_command(cmd: dict) -> dict:
     """Send a command to the daemon and return the response."""
     sock = connect()
@@ -86,7 +109,7 @@ def cmd_run(overlay: str, run_args: list):
             "cmd": "run",
             "overlay": overlay,
             "args": run_args,
-            "env": {"TERM": os.environ.get("TERM", "xterm-256color")},
+            "env": get_session_env(),
         }
         msg = json.dumps(cmd, separators=(",", ":")) + "\n"
         sock.sendall(msg.encode("utf-8"))
@@ -146,6 +169,7 @@ def cmd_shell(overlay: str, shell_args: list):
             "cmd": "pty",
             "overlay": overlay,
             "args": shell_args,
+            "env": get_session_env(),
         }
         msg = json.dumps(cmd, separators=(",", ":")) + "\n"
         sock.sendall(msg.encode("utf-8"))

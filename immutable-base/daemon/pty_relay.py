@@ -21,13 +21,14 @@ RESIZE_SUFFIX = b"t"
 class PtyRelay:
     """Manages a PTY session between a socket client and a chroot shell."""
 
-    def __init__(self, sock, mount_ctx: Dict[str, Any], overlay_name: str, args: list):
+    def __init__(self, sock, mount_ctx: Dict[str, Any], overlay_name: str, args: list, env: dict = None):
         self.sock = sock
         self.mount_ctx = mount_ctx
         self.root = mount_ctx["root"]
         self.username = mount_ctx["username"]
         self.overlay_name = overlay_name
         self.args = args
+        self.env = env or {}
         self.child_pid = None
         self.master_fd = None
 
@@ -40,6 +41,22 @@ class PtyRelay:
             fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
         except Exception:
             pass
+
+        # Resolve the user's UID/GID for privilege drop
+        import pwd
+        pw = pwd.getpwnam(self.username)
+        uid, gid = pw.pw_uid, pw.pw_gid
+
+        env = {
+            "HOME": f"/home/{self.username}",
+            "USER": self.username,
+            "LOGNAME": self.username,
+            "SHELL": "/bin/bash",
+            "TERM": "xterm-256color",
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG": "en_US.UTF-8",
+        }
+        env.update(self.env)
 
         pid = os.fork()
         if pid == 0:
@@ -54,26 +71,17 @@ class PtyRelay:
             if slave_fd > 2:
                 os.close(slave_fd)
 
-            exec_cmd = [
-                CHROOT_BIN, self.root,
-                "su", self.username,
-                "-c", shlex.join(self.args),
-            ] if self.args else [
-                CHROOT_BIN, self.root,
-                "su", self.username,
-            ]
+            # Drop privileges to the target user
+            os.setgroups([gid])
+            os.setgid(gid)
+            os.setuid(uid)
 
-            env = {
-                "HOME": f"/home/{self.username}",
-                "USER": self.username,
-                "LOGNAME": self.username,
-                "SHELL": "/bin/bash",
-                "TERM": os.environ.get("TERM", "xterm-256color"),
-                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "LANG": "en_US.UTF-8",
-            }
+            # Chroot into the overlay
+            os.chroot(self.root)
+            os.chdir("/")
 
-            os.execve(CHROOT_BIN, exec_cmd, env)
+            # Exec a login shell — bash detects the PTY, sources .profile + .bashrc
+            os.execve("/bin/bash", ["bash", "--login"], env)
             os._exit(127)
 
         # Parent process (daemon)
