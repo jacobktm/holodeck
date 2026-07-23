@@ -298,6 +298,7 @@ Usage:
   immutable shell <name>        Open interactive shell in overlay
   immutable run <name> <cmd>    Run command in overlay (non-interactive)
   immutable list                List all overlays
+  immutable list-names          List overlay names (one per line, for scripting)
   immutable switch <name>       Set overlay as boot default (needs reboot)
   immutable reset <name>        Reset overlay to @base state
   immutable delete <name>       Delete an overlay
@@ -321,6 +322,8 @@ def main():
         print_help()
     elif cmd == "list":
         cmd_simple({"cmd": "list"})
+    elif cmd == "list-names":
+        cmd_simple({"cmd": "list-names"})
     elif cmd == "status":
         cmd_simple({"cmd": "status"})
     elif cmd == "lock":

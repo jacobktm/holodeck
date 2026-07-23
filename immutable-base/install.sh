@@ -446,6 +446,10 @@ echo "Created recovery overlay"
 cp "$(dirname "$0")/immutable" "$MOUNT_POINT/usr/local/bin/immutable"
 chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
 
+# Install bash completions
+mkdir -p "$MOUNT_POINT/usr/share/bash-completion/completions"
+cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/usr/share/bash-completion/completions/immutable"
+
 # ── Install immutable daemon ──
 
 # Create immutable group

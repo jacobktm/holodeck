@@ -98,6 +98,7 @@ class CommandHandler:
 
         dispatch = {
             "list":            self._cmd_list,
+            "list-names":      self._cmd_list_names,
             "status":          self._cmd_status,
             "create":          self._cmd_create,
             "delete":          self._cmd_delete,
@@ -229,6 +230,18 @@ class CommandHandler:
         lines.extend(self.boot.show_config())
 
         return {"ok": True, "output": "\n".join(lines)}
+
+    def _cmd_list_names(self, msg):
+        """Return overlay names, one per line. Used by shell completions."""
+        self._ensure_pool()
+        names = []
+        for path in self.btrfs.list_subvolumes(POOL):
+            basename = os.path.basename(path)
+            if basename.startswith(OVERLAY_PREFIX):
+                names.append(basename[len(OVERLAY_PREFIX):])
+        names.append("@base")
+        names.append("@data")
+        return {"ok": True, "output": "\n".join(names)}
 
     def _cmd_status(self, msg):
         self._ensure_pool()
