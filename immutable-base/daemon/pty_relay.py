@@ -137,15 +137,17 @@ class PtyRelay:
         return exit_code
 
     def _relay_loop(self) -> int:
-        """Relay bytes between socket and PTY master."""
+        """Relay bytes between socket and PTY master using buffered writes."""
         self.sock.setblocking(False)
         os.set_blocking(self.master_fd, False)
+
+        write_buf = b""
 
         while True:
             try:
                 pid, status = os.waitpid(self.child_pid, os.WNOHANG)
                 if pid != 0:
-                    self._drain_pty()
+                    self._drain_pty(write_buf)
                     if os.WIFEXITED(status):
                         return os.WEXITSTATUS(status)
                     elif os.WIFSIGNALED(status):
@@ -155,17 +157,30 @@ class PtyRelay:
                 log.warning("PTY relay: child already reaped")
                 return 1
 
+            # Include sock in writable list when we have data to send
+            read_fds = [self.sock, self.master_fd]
+            write_fds = [self.sock] if write_buf else []
+
             try:
-                readable, _, _ = select.select(
-                    [self.sock, self.master_fd], [], [], 0.1
+                readable, writable, _ = select.select(
+                    read_fds, write_fds, [], 0.1
                 )
             except (ValueError, OSError) as e:
                 log.error("PTY relay: select failed: %s", e)
                 break
 
+            # Drain write buffer first — prevents PTY backpressure
+            for fd in writable:
+                if fd is self.sock and write_buf:
+                    try:
+                        sent = self.sock.send(write_buf)
+                        write_buf = write_buf[sent:]
+                    except (BrokenPipeError, OSError):
+                        return 1
+
             for fd in readable:
                 try:
-                    if fd == self.sock:
+                    if fd is self.sock:
                         data = self.sock.recv(4096)
                         if not data:
                             # Client disconnected
@@ -179,11 +194,10 @@ class PtyRelay:
                         if data:
                             os.write(self.master_fd, data)
 
-                    elif fd == self.master_fd:
+                    elif fd is self.master_fd:
                         data = os.read(self.master_fd, 4096)
-                        if not data:
-                            continue
-                        self._send_all(data)
+                        if data:
+                            write_buf += data
 
                 except (OSError, BrokenPipeError) as e:
                     log.error("PTY relay: I/O error: %s", e)
@@ -225,32 +239,31 @@ class PtyRelay:
 
         return bytes(result)
 
-    def _drain_pty(self):
+    def _drain_pty(self, write_buf: bytes = b""):
         """Drain any remaining data from the PTY master after child exit."""
         while True:
             try:
-                readable, _, _ = select.select([self.master_fd], [], [], 0.1)
-                if not readable:
-                    break
-                data = os.read(self.master_fd, 4096)
-                if not data:
-                    break
-                self._send_all(data)
+                readable, writable, _ = select.select(
+                    [self.master_fd],
+                    [self.sock] if write_buf else [],
+                    [],
+                    0.1,
+                )
             except (OSError, ValueError):
                 break
 
-    def _send_all(self, data: bytes):
-        """Send all data to the client socket, waiting for buffer space."""
-        total = 0
-        while total < len(data):
-            try:
-                sent = self.sock.send(data[total:])
-                total += sent
-            except BlockingIOError:
-                # Socket buffer full — wait for client to drain it
-                try:
-                    select.select([], [self.sock], [], 2.0)
-                except (ValueError, OSError):
-                    break
-            except (BrokenPipeError, OSError):
+            # Send any buffered data
+            for fd in writable:
+                if fd is self.sock and write_buf:
+                    try:
+                        sent = self.sock.send(write_buf)
+                        write_buf = write_buf[sent:]
+                    except (BrokenPipeError, OSError):
+                        return
+
+            if not readable:
                 break
+            data = os.read(self.master_fd, 4096)
+            if not data:
+                break
+            write_buf += data
