@@ -141,6 +141,7 @@ class PtyRelay:
         self.sock.setblocking(False)
         os.set_blocking(self.master_fd, False)
 
+        WRITE_HIGH_WATER = 256 * 1024  # Stop reading PTY when buf > 256KB
         write_buf = b""
 
         while True:
@@ -157,8 +158,12 @@ class PtyRelay:
                 log.warning("PTY relay: child already reaped")
                 return 1
 
-            # Include sock in writable list when we have data to send
-            read_fds = [self.sock, self.master_fd]
+            # Only monitor PTY for reading when write buffer is below threshold.
+            # This creates backpressure: PTY buffer fills → bash blocks on write.
+            read_fds = [self.sock]
+            if len(write_buf) < WRITE_HIGH_WATER:
+                read_fds.append(self.master_fd)
+
             write_fds = [self.sock] if write_buf else []
 
             try:
@@ -175,6 +180,8 @@ class PtyRelay:
                     try:
                         sent = self.sock.send(write_buf)
                         write_buf = write_buf[sent:]
+                    except BlockingIOError:
+                        pass
                     except (BrokenPipeError, OSError):
                         return 1
 
@@ -258,6 +265,8 @@ class PtyRelay:
                     try:
                         sent = self.sock.send(write_buf)
                         write_buf = write_buf[sent:]
+                    except BlockingIOError:
+                        pass
                     except (BrokenPipeError, OSError):
                         return
 
