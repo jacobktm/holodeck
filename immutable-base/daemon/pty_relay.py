@@ -240,11 +240,17 @@ class PtyRelay:
                 break
 
     def _send_all(self, data: bytes):
-        """Send all data to the client socket."""
+        """Send all data to the client socket, waiting for buffer space."""
         total = 0
         while total < len(data):
             try:
                 sent = self.sock.send(data[total:])
                 total += sent
+            except BlockingIOError:
+                # Socket buffer full — wait for client to drain it
+                try:
+                    select.select([], [self.sock], [], 2.0)
+                except (ValueError, OSError):
+                    break
             except (BrokenPipeError, OSError):
                 break
