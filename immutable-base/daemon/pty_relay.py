@@ -9,11 +9,11 @@ import fcntl
 import termios
 import shutil
 import logging
+import traceback
 from typing import Dict, Any
 
 log = logging.getLogger("immutable-daemon")
 
-CHROOT_BIN = shutil.which("chroot") or "/usr/sbin/chroot"
 RESIZE_PREFIX = b"\x1b[8;"
 RESIZE_SUFFIX = b"t"
 
@@ -21,7 +21,7 @@ RESIZE_SUFFIX = b"t"
 class PtyRelay:
     """Manages a PTY session between a socket client and a chroot shell."""
 
-    def __init__(self, sock, mount_ctx: Dict[str, Any], overlay_name: str, args: list, env: dict = None):
+    def __init__(self, sock, mount_ctx: Dict[str, Any], overlay_name: str, args: list, env: dict = None, norc: bool = False):
         self.sock = sock
         self.mount_ctx = mount_ctx
         self.root = mount_ctx["root"]
@@ -29,6 +29,7 @@ class PtyRelay:
         self.overlay_name = overlay_name
         self.args = args
         self.env = env or {}
+        self.norc = norc
         self.child_pid = None
         self.master_fd = None
 
@@ -61,41 +62,73 @@ class PtyRelay:
         pid = os.fork()
         if pid == 0:
             # Child process
-            os.close(master_fd)
-            os.setsid()
-            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+            try:
+                os.close(master_fd)
+                os.setsid()
+                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
 
-            os.dup2(slave_fd, 0)
-            os.dup2(slave_fd, 1)
-            os.dup2(slave_fd, 2)
-            if slave_fd > 2:
-                os.close(slave_fd)
+                os.dup2(slave_fd, 0)
+                os.dup2(slave_fd, 1)
+                os.dup2(slave_fd, 2)
+                if slave_fd > 2:
+                    os.close(slave_fd)
 
-            # Chroot first (requires root), then drop privileges.
-            # CWD is inherited and becomes / after chroot.
-            os.chroot(self.root)
-            os.chdir(f"/home/{self.username}")
+                # Close all other inherited FDs (from daemon fork)
+                for fd in range(3, 1024):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
 
-            os.setgroups([gid])
-            os.setgid(gid)
-            os.setuid(uid)
+                # Chroot first (requires root), then drop privileges.
+                os.chroot(self.root)
+                os.chdir(f"/home/{self.username}")
 
-            # Exec a login shell — bash detects the PTY, sources .profile + .bashrc
-            os.execve("/bin/bash", ["bash", "--login"], env)
-            os._exit(127)
+                os.setgroups([gid])
+                os.setgid(gid)
+                os.setuid(uid)
+
+                # Build shell args
+                if self.norc:
+                    shell_args = ["/bin/bash", "--norc", "--noprofile"]
+                else:
+                    shell_args = ["/bin/bash", "--login"]
+
+                if self.args:
+                    shell_args.extend(self.args)
+
+                os.execve(shell_args[0], shell_args, env)
+                os._exit(127)
+            except Exception as e:
+                # Write error to fd 2 (PTY slave) so parent sees it
+                try:
+                    os.write(2, f"\r\nPTY child setup FAILED: {e}\r\n".encode())
+                except OSError:
+                    pass
+                os._exit(1)
 
         # Parent process (daemon)
         os.close(slave_fd)
         self.child_pid = pid
         self.master_fd = master_fd
 
+        log.info("PTY session started: pid=%d root=%s user=%s", pid, self.root, self.username)
+
         try:
             exit_code = self._relay_loop()
         finally:
             try:
-                os.waitpid(pid, 0)
+                _, status = os.waitpid(pid, os.WNOHANG)
+                if os.WIFEXITED(status):
+                    code = os.WEXITSTATUS(status)
+                    log.info("PTY child exited: code=%d (0=clean exit, non-zero=error)", code)
+                    if code != 0:
+                        log.warning("Shell exited with error code %d — likely crash during .bashrc/.profile sourcing", code)
+                elif os.WIFSIGNALED(status):
+                    sig = os.WTERMSIG(status)
+                    log.warning("PTY child killed by signal %d (%s)", sig, signal.Signals(sig).name)
             except ChildProcessError:
-                pass
+                log.warning("PTY child already reaped")
             try:
                 os.close(master_fd)
             except OSError:
@@ -109,20 +142,25 @@ class PtyRelay:
         os.set_blocking(self.master_fd, False)
 
         while True:
-            pid, status = os.waitpid(self.child_pid, os.WNOHANG)
-            if pid != 0:
-                self._drain_pty()
-                if os.WIFEXITED(status):
-                    return os.WEXITSTATUS(status)
-                elif os.WIFSIGNALED(status):
-                    return 128 + os.WTERMSIG(status)
+            try:
+                pid, status = os.waitpid(self.child_pid, os.WNOHANG)
+                if pid != 0:
+                    self._drain_pty()
+                    if os.WIFEXITED(status):
+                        return os.WEXITSTATUS(status)
+                    elif os.WIFSIGNALED(status):
+                        return 128 + os.WTERMSIG(status)
+                    return 1
+            except ChildProcessError:
+                log.warning("PTY relay: child already reaped")
                 return 1
 
             try:
                 readable, _, _ = select.select(
                     [self.sock, self.master_fd], [], [], 0.1
                 )
-            except (ValueError, OSError):
+            except (ValueError, OSError) as e:
+                log.error("PTY relay: select failed: %s", e)
                 break
 
             for fd in readable:
@@ -130,6 +168,7 @@ class PtyRelay:
                     if fd == self.sock:
                         data = self.sock.recv(4096)
                         if not data:
+                            # Client disconnected
                             try:
                                 os.kill(-self.child_pid, signal.SIGHUP)
                             except ProcessLookupError:
@@ -146,7 +185,8 @@ class PtyRelay:
                             continue
                         self._send_all(data)
 
-                except (OSError, BrokenPipeError):
+                except (OSError, BrokenPipeError) as e:
+                    log.error("PTY relay: I/O error: %s", e)
                     return 1
 
         return 1
@@ -175,7 +215,6 @@ class PtyRelay:
                                 termios.TIOCSWINSZ,
                                 winsize,
                             )
-                            log.debug("PTY resize: %dx%d", cols, rows)
                         except (ValueError, OSError) as e:
                             log.warning("Resize failed: %s", e)
                     i = end + 1

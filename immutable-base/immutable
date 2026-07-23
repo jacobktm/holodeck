@@ -160,7 +160,7 @@ def cmd_run(overlay: str, run_args: list):
         sock.close()
 
 
-def cmd_shell(overlay: str, shell_args: list):
+def cmd_shell(overlay: str, shell_args: list, norc=False):
     """Open an interactive shell session."""
     sock = connect()
     try:
@@ -170,6 +170,7 @@ def cmd_shell(overlay: str, shell_args: list):
             "overlay": overlay,
             "args": shell_args,
             "env": get_session_env(),
+            "norc": norc,
         }
         msg = json.dumps(cmd, separators=(",", ":")) + "\n"
         sock.sendall(msg.encode("utf-8"))
@@ -287,7 +288,7 @@ def print_help():
 
 Usage:
   immutable create <name> [--from <source>]  Create overlay (default: active boot overlay)
-  immutable shell <name>        Open interactive shell in overlay
+  immutable shell <name> [--norc]   Open interactive shell in overlay
   immutable run <name> <cmd>    Run command in overlay (non-interactive)
   immutable list                List all overlays
   immutable switch <name>       Set overlay as boot default (needs reboot)
@@ -362,9 +363,11 @@ def main():
         cmd_run(sys.argv[2], sys.argv[3:])
     elif cmd == "shell":
         if len(sys.argv) < 3:
-            print("Usage: immutable shell <name>", file=sys.stderr)
+            print("Usage: immutable shell <name> [--norc]", file=sys.stderr)
             sys.exit(1)
-        cmd_shell(sys.argv[2], sys.argv[3:])
+        norc = "--norc" in sys.argv
+        args = [a for a in sys.argv[3:] if a != "--norc"]
+        cmd_shell(sys.argv[2], args, norc=norc)
     elif cmd == "update":
         # Copy self to @data
         import shutil
