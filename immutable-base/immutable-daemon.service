@@ -12,6 +12,8 @@ User=root
 Group=root
 
 LimitNOFILE=65536
+DeviceAllow=/dev/pts/* rw
+DeviceAllow=ptmx rw
 TimeoutStopSec=5
 Restart=on-failure
 RestartSec=2
