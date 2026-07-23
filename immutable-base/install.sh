@@ -412,7 +412,7 @@ fi
 # Mount @base with proper block device for kernel postinst
 mkdir -p "$MOUNT_POINT/pool/@base/tmp"
 mount --bind /dev "$MOUNT_POINT/pool/@base/dev" 2>/dev/null || true
-mount -t devpts devpts "$MOUNT_POINT/pool/@base/dev/pts" -o "gid=5,mode=620,ptmxmode=000" 2>/dev/null || true
+mount -t devpts devpts "$MOUNT_POINT/pool/@base/dev/pts" -o "gid=5,mode=620,ptmxmode=0666" 2>/dev/null || true
 mount -t proc proc "$MOUNT_POINT/pool/@base/proc" 2>/dev/null || true
 mount --rbind /sys "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
 mount --make-rslave "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
@@ -468,6 +468,23 @@ mkdir -p "$MOUNT_POINT/run/immutable"
 
 # Enable daemon socket
 chroot "$MOUNT_POINT" systemctl enable immutable-daemon.socket 2>/dev/null || true
+
+# Fix devpts ptmx permissions (base image may set ptmxmode=000)
+cat > "$MOUNT_POINT/etc/systemd/system/fix-devpts.service" <<'UNIT'
+[Unit]
+Description=Fix devpts ptmxmode for PTY allocation
+After=systemd-udevd.service
+Before=immutable-daemon.socket
+
+[Service]
+Type=oneshot
+ExecStart=/bin/mount -o remount,ptmxmode=0666 /dev/pts
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+UNIT
+chroot "$MOUNT_POINT" systemctl enable fix-devpts.service 2>/dev/null || true
 
 echo "Installed immutable daemon"
 
