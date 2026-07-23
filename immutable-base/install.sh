@@ -141,8 +141,8 @@ mount "$PART_EFI" "$MOUNT_POINT/boot/efi"
 
 # ── Encrypted swap (plain dm-crypt, auto-generated key like Pop!_OS) ──
 
-SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
 mkswap -L swap "$PART_SWAP"
+SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
 echo "cryptswap UUID=$SWAP_UUID /dev/urandom swap,plain,offset=1024,cipher=aes-xts-plain64,size=512" >> "$MOUNT_POINT/etc/crypttab"
 
 # ── Chroot setup ──
