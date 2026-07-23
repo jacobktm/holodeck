@@ -95,9 +95,17 @@ class ChrootMount:
                 log.info("Overlay /run inspection failed: %s", e)
 
         _mkdir_p(overlay_run)
-        run_mounted = _bind("/run", overlay_run)
+        subprocess.run(
+            ["mount", "--rbind", "/run", overlay_run],
+            check=False, capture_output=True,
+        )
+        subprocess.run(
+            ["mount", "--make-rslave", overlay_run],
+            check=False, capture_output=True,
+        )
+        run_mounted = os.path.ismount(overlay_run)
 
-        log.info("After bind: ismount=%s bind_ok=%s", os.path.ismount(overlay_run), run_mounted)
+        log.info("After rbind: ismount=%s", run_mounted)
         try:
             log.info("Overlay /run after mount: %s", sorted(os.listdir(overlay_run)))
             if os.path.exists(f"{overlay_run}/user/1000"):
@@ -166,7 +174,7 @@ class ChrootMount:
             if os.path.ismount(mount_point):
                 try:
                     subprocess.run(
-                        ["umount", "-R", mount_point] if mount_point.endswith(("/dev", "/sys"))
+                        ["umount", "-R", mount_point] if mount_point.endswith(("/dev", "/sys", "/run"))
                         else ["umount", mount_point],
                         check=False, capture_output=True, timeout=10,
                     )
