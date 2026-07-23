@@ -250,15 +250,19 @@ class CommandHandler:
         if os.path.isdir(dst):
             return {"ok": False, "error": f"Overlay '{name}' already exists"}
 
-        src = f"{POOL}/{BASE_SUBVOL}"
+        # Snapshot from the active boot overlay, not @base.
+        # @base is the bare debootstrap image; the boot overlay has
+        # all packages, drivers, and configs installed by install.sh.
+        active = self.boot.get_active_subvol()
+        src = f"{POOL}/{active}" if active else f"{POOL}/{BASE_SUBVOL}"
         if not os.path.isdir(src):
-            return {"ok": False, "error": f"Base system not found at {src}"}
+            return {"ok": False, "error": f"Source system not found at {src}"}
 
         self.btrfs.snapshot(src, dst)
         return {
             "ok": True,
             "output": (
-                f"Creating overlay '{name}' from @base...\n"
+                f"Creating overlay '{name}' from {active or '@base'}...\n"
                 f"Created: {dst}\n\n"
                 f"Next steps:\n"
                 f"  immutable shell {name}      # enter overlay\n"
@@ -293,10 +297,11 @@ class CommandHandler:
         if not os.path.isdir(dst):
             return {"ok": False, "error": f"Overlay '{name}' not found"}
 
-        src = f"{POOL}/{BASE_SUBVOL}"
+        active = self.boot.get_active_subvol()
+        src = f"{POOL}/{active}" if active else f"{POOL}/{BASE_SUBVOL}"
         self.btrfs.delete_subvol(dst)
         self.btrfs.snapshot(src, dst)
-        return {"ok": True, "output": f"Resetting overlay '{name}' from @base...\nReset complete: {dst}"}
+        return {"ok": True, "output": f"Resetting overlay '{name}' from {active or '@base'}...\nReset complete: {dst}"}
 
     def _cmd_switch(self, msg):
         name = msg.get("name")
