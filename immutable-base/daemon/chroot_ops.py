@@ -1,6 +1,5 @@
 """Chroot filesystem mounting and unmounting."""
 import os
-import pwd
 import shutil
 import subprocess
 import logging
@@ -72,20 +71,6 @@ class ChrootMount:
 
         _mkdir_p(f"{root}/run")
         _bind("/run", f"{root}/run")
-
-        # Ensure user can access their runtime dir (Wayland, D-Bus, PipeWire).
-        # systemd-logind may create /run/user/<uid> as root-owned.
-        try:
-            pw_ent = pwd.getpwnam(username)
-            runtime_dir = f"{root}/run/user/{pw_ent.pw_uid}"
-            if os.path.isdir(runtime_dir):
-                subprocess.run(
-                    ["chown", f"{pw_ent.pw_uid}:{pw_ent.pw_gid}", runtime_dir],
-                    check=True, capture_output=True,
-                )
-        except (KeyError, subprocess.CalledProcessError):
-            pass
-
         _mkdir_p(f"{root}/tmp")
         _bind("/tmp", f"{root}/tmp")
 
