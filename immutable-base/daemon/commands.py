@@ -341,10 +341,8 @@ class CommandHandler:
         username = self.chroot._get_username()
         cmd = [CHROOT_BIN, root, "su", username, "-c"]
 
-        if len(args) == 1:
-            cmd.append("bash -l -c " + shlex.join(args))
-        elif len(args) > 1:
-            cmd.append("bash -l -c " + shlex.join(args))
+        if args:
+            cmd.append("bash -l -c " + shlex.quote("cd && " + shlex.join(args)))
         else:
             cmd.append("bash -l")
 
