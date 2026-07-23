@@ -286,7 +286,7 @@ def print_help():
     print(f"""immutable v{VERSION} -- Overlay management for immutable Pop!_OS
 
 Usage:
-  immutable create <name>       Create a new overlay (snapshot of @base)
+  immutable create <name> [--from <source>]  Create overlay (default: active boot overlay)
   immutable shell <name>        Open interactive shell in overlay
   immutable run <name> <cmd>    Run command in overlay (non-interactive)
   immutable list                List all overlays
@@ -325,9 +325,21 @@ def main():
         cmd_simple({"cmd": "reset-recovery"})
     elif cmd == "create":
         if len(sys.argv) < 3:
-            print("Usage: immutable create <name>", file=sys.stderr)
+            print("Usage: immutable create <name> [--from <source>]", file=sys.stderr)
             sys.exit(1)
-        cmd_simple({"cmd": "create", "name": sys.argv[2]})
+        name = sys.argv[2]
+        source = None
+        if "--from" in sys.argv:
+            idx = sys.argv.index("--from")
+            if idx + 1 < len(sys.argv):
+                source = sys.argv[idx + 1]
+            else:
+                print("Usage: immutable create <name> [--from <source>]", file=sys.stderr)
+                sys.exit(1)
+        msg = {"cmd": "create", "name": name}
+        if source:
+            msg["source"] = source
+        cmd_simple(msg)
     elif cmd == "delete":
         if len(sys.argv) < 3:
             print("Usage: immutable delete <name>", file=sys.stderr)

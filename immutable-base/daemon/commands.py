@@ -250,11 +250,21 @@ class CommandHandler:
         if os.path.isdir(dst):
             return {"ok": False, "error": f"Overlay '{name}' already exists"}
 
-        # Snapshot from the active boot overlay, not @base.
-        # @base is the bare debootstrap image; the boot overlay has
-        # all packages, drivers, and configs installed by install.sh.
-        active = self.boot.get_active_subvol()
-        src = f"{POOL}/{active}" if active else f"{POOL}/{BASE_SUBVOL}"
+        # Resolve source: explicit --from, active boot overlay, or @base fallback
+        source = msg.get("source")
+        if source:
+            if source == "@base":
+                src = f"{POOL}/{BASE_SUBVOL}"
+            elif source.startswith("@overlay-"):
+                src = f"{POOL}/{source}"
+            else:
+                src = f"{POOL}/{OVERLAY_PREFIX}{source}"
+            source_label = source
+        else:
+            active = self.boot.get_active_subvol()
+            src = f"{POOL}/{active}" if active else f"{POOL}/{BASE_SUBVOL}"
+            source_label = active or "@base"
+
         if not os.path.isdir(src):
             return {"ok": False, "error": f"Source system not found at {src}"}
 
@@ -262,7 +272,7 @@ class CommandHandler:
         return {
             "ok": True,
             "output": (
-                f"Creating overlay '{name}' from {active or '@base'}...\n"
+                f"Creating overlay '{name}' from {source_label}...\n"
                 f"Created: {dst}\n\n"
                 f"Next steps:\n"
                 f"  immutable shell {name}      # enter overlay\n"
