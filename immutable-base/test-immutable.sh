@@ -870,11 +870,11 @@ if id "$TEST_USERNAME" &>/dev/null; then
     fi
 
     # Test HOME is correct inside overlay
-    echo "  Running: immutable run $TEST_OVERLAY pwd..."
-    HOME_OUTPUT=$(timeout 15 immutable run "$TEST_OVERLAY" pwd 2>&1) || true
-    echo "  pwd inside overlay: $HOME_OUTPUT"
+    echo "  Running: immutable run $TEST_OVERLAY printenv HOME..."
+    HOME_OUTPUT=$(timeout 15 immutable run "$TEST_OVERLAY" printenv HOME 2>&1) || true
+    echo "  HOME inside overlay: $HOME_OUTPUT"
 
-    if echo "$HOME_OUTPUT" | grep -q "/home/$TEST_USERNAME"; then
+    if [ "$HOME_OUTPUT" = "/home/$TEST_USERNAME" ]; then
         log_pass "HOME is correct inside overlay: $HOME_OUTPUT"
     else
         log_fail "HOME is wrong inside overlay: $HOME_OUTPUT (expected /home/$TEST_USERNAME)"
