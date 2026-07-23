@@ -339,7 +339,7 @@ class CommandHandler:
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""
         username = self.chroot._get_username()
-        cmd = [CHROOT_BIN, root, "su", "-", username, "-c"]
+        cmd = [CHROOT_BIN, root, "su", username, "-c"]
 
         if len(args) == 1:
             cmd.append(args[0])

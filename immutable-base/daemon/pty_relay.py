@@ -56,11 +56,11 @@ class PtyRelay:
 
             exec_cmd = [
                 CHROOT_BIN, self.root,
-                "su", "-", self.username,
+                "su", self.username,
                 "-c", shlex.join(self.args),
             ] if self.args else [
                 CHROOT_BIN, self.root,
-                "su", "-", self.username,
+                "su", self.username,
             ]
 
             env = {
