@@ -224,13 +224,24 @@ def cmd_shell(overlay: str, shell_args: list):
 
 
 def _relay_loop(sock, stdin_fd):
-    """Relay bytes between stdin/stdout and the daemon socket."""
+    """Relay bytes between stdin/stdout and the daemon socket.
+
+    On Ctrl+D we send the EOF marker to the daemon but keep reading
+    until the daemon closes the socket (after teardown is complete).
+    This keeps the overlay terminal visible during cleanup.
+    """
     sock.setblocking(True)
     os.set_blocking(stdin_fd, False)
 
+    sent_eof = False
+
     while True:
         try:
-            readable, _, _ = select.select([stdin_fd, sock], [], [], 0.1)
+            readable, _, _ = select.select(
+                [stdin_fd] if not sent_eof else [],
+                [sock],
+                [], 0.1,
+            )
         except (ValueError, OSError):
             break
 
@@ -256,8 +267,9 @@ def _relay_loop(sock, stdin_fd):
                     try:
                         sock.sendall(b"")
                     except (BrokenPipeError, ConnectionResetError):
-                        pass
-                    return
+                        return
+                    sent_eof = True
+                    continue
 
                 try:
                     sock.sendall(data)

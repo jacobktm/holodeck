@@ -34,6 +34,7 @@ class Daemon:
     def run(self):
         """Main daemon loop."""
         signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 
         sock = self._create_listener()
 
