@@ -850,11 +850,12 @@ echo "=== Test 12: Non-root User Access to Overlays ==="
 TEST_USERNAME="USERNAME"
 
 if id "$TEST_USERNAME" &>/dev/null; then
-    echo "  Testing as user: $TEST_USERNAME"
+    echo "  Testing as user: $TEST_USERNAME (uid=$(id -u $TEST_USERNAME))"
+    echo "  Note: test script already runs as $TEST_USERNAME — no su wrapper needed"
 
     # Test immutable run as non-root — should see correct user context
-    echo "  Running: immutable run $TEST_OVERLAY id -u (as $TEST_USERNAME)..."
-    RUN_OUTPUT=$(timeout 15 su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY id -u" 2>&1) && run_rc=0 || run_rc=$?
+    echo "  Running: immutable run $TEST_OVERLAY id -u..."
+    RUN_OUTPUT=$(timeout 15 immutable run "$TEST_OVERLAY" id -u 2>&1) && run_rc=0 || run_rc=$?
     echo "  raw output: '$RUN_OUTPUT' (rc=$run_rc)"
     RUN_UID=$(echo "$RUN_OUTPUT" | tr -d '[:space:]')
 
@@ -869,8 +870,8 @@ if id "$TEST_USERNAME" &>/dev/null; then
     fi
 
     # Test HOME is correct inside overlay
-    echo "  Running: immutable run $TEST_OVERLAY pwd (as $TEST_USERNAME)..."
-    HOME_OUTPUT=$(timeout 15 su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY pwd" 2>&1) || true
+    echo "  Running: immutable run $TEST_OVERLAY pwd..."
+    HOME_OUTPUT=$(timeout 15 immutable run "$TEST_OVERLAY" pwd 2>&1) || true
     echo "  pwd inside overlay: $HOME_OUTPUT"
 
     if echo "$HOME_OUTPUT" | grep -q "/home/$TEST_USERNAME"; then
@@ -880,11 +881,11 @@ if id "$TEST_USERNAME" &>/dev/null; then
     fi
 
     # Test sudo apt works inside overlay (the real use case)
-    echo "  Running: immutable run $TEST_OVERLAY sudo apt-get install -y tree (as $TEST_USERNAME)..."
-    APT_OUTPUT=$(timeout 60 su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY sudo apt-get install -y tree" 2>&1) || true
+    echo "  Running: immutable run $TEST_OVERLAY sudo apt-get install -y tree..."
+    APT_OUTPUT=$(timeout 60 immutable run "$TEST_OVERLAY" sudo apt-get install -y tree 2>&1) || true
     echo "$APT_OUTPUT" | tail -3
 
-    if timeout 15 su - "$TEST_USERNAME" -c "immutable run $TEST_OVERLAY which tree" 2>/dev/null | grep -q tree; then
+    if timeout 15 immutable run "$TEST_OVERLAY" which tree 2>/dev/null | grep -q tree; then
         log_pass "sudo apt-get install works inside overlay as non-root"
     else
         log_fail "sudo apt-get install failed inside overlay as non-root"
@@ -892,7 +893,7 @@ if id "$TEST_USERNAME" &>/dev/null; then
 
     # Verify installed package doesn't exist in @base
     echo "  Verifying 'tree' not in @base..."
-    if su - "$TEST_USERNAME" -c "immutable run @base which tree" 2>/dev/null | grep -q tree; then
+    if timeout 15 immutable run @base which tree 2>/dev/null | grep -q tree; then
         log_fail "tree found in @base — isolation broken"
     else
         log_pass "tree not in @base (only in overlay)"
