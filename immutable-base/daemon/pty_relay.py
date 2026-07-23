@@ -6,7 +6,7 @@ import signal
 import struct
 import fcntl
 import termios
-import shutil
+import errno
 import logging
 from typing import Dict, Any
 
@@ -15,16 +15,14 @@ log = logging.getLogger("immutable-daemon")
 RESIZE_PREFIX = b"\x1b[8;"
 RESIZE_SUFFIX = b"t"
 
-# Write buffer high-water mark: stop reading PTY when buffer exceeds this.
-# This creates backpressure — PTY kernel buffer fills, bash blocks on write.
-WRITE_HIGH_WATER = 256 * 1024
+RELAY_BUF_SIZE = 256 * 1024
 
 
 class PtyRelay:
     """Manages a PTY session between a socket client and a chroot shell."""
 
     def __init__(self, sock, mount_ctx: Dict[str, Any], overlay_name: str,
-                 args: list, env: dict = None, norc: bool = False):
+                 args: list, env: dict = None):
         self.sock = sock
         self.mount_ctx = mount_ctx
         self.root = mount_ctx["root"]
@@ -32,7 +30,6 @@ class PtyRelay:
         self.overlay_name = overlay_name
         self.args = args
         self.env = env or {}
-        self.norc = norc
         self.child_pid = None
         self.master_fd = None
 
@@ -46,7 +43,6 @@ class PtyRelay:
         except Exception:
             pass
 
-        # Resolve the user's UID/GID for privilege drop
         import pwd
         pw = pwd.getpwnam(self.username)
         uid, gid = pw.pw_uid, pw.pw_gid
@@ -64,7 +60,6 @@ class PtyRelay:
 
         pid = os.fork()
         if pid == 0:
-            # Child process
             try:
                 os.close(master_fd)
                 os.setsid()
@@ -76,14 +71,12 @@ class PtyRelay:
                 if slave_fd > 2:
                     os.close(slave_fd)
 
-                # Close all other inherited FDs (from daemon fork)
                 for fd in range(3, 1024):
                     try:
                         os.close(fd)
                     except OSError:
                         pass
 
-                # Chroot first (requires root), then drop privileges.
                 os.chroot(self.root)
                 os.chdir(f"/home/{self.username}")
 
@@ -91,12 +84,7 @@ class PtyRelay:
                 os.setgid(gid)
                 os.setuid(uid)
 
-                # Build shell args
-                if self.norc:
-                    shell_args = ["/bin/bash", "--norc", "--noprofile"]
-                else:
-                    shell_args = ["/bin/bash", "--login"]
-
+                shell_args = ["/bin/bash", "--login"]
                 if self.args:
                     shell_args.extend(self.args)
 
@@ -109,7 +97,6 @@ class PtyRelay:
                     pass
                 os._exit(1)
 
-        # Parent process (daemon)
         os.close(slave_fd)
         self.child_pid = pid
         self.master_fd = master_fd
@@ -126,8 +113,7 @@ class PtyRelay:
                     code = os.WEXITSTATUS(status)
                     log.info("PTY child exited: code=%d", code)
                     if code != 0:
-                        log.warning(
-                            "Shell exited with error code %d", code)
+                        log.warning("Shell exited with error code %d", code)
                 elif os.WIFSIGNALED(status):
                     sig = os.WTERMSIG(status)
                     log.warning("PTY child killed by signal %d (%s)",
@@ -144,20 +130,16 @@ class PtyRelay:
     def _relay_loop(self) -> int:
         """Relay bytes between socket and PTY master.
 
-        Pattern: blocking socket for sends (sendall after select confirms
-        writability), non-blocking PTY master for reads. select() drives
-        all I/O decisions. Write buffer accumulates PTY output; backpressure
-        kicks in at WRITE_HIGH_WATER to prevent unbounded growth.
+        Blocking socket for sends (sendall after select confirms writability).
+        Non-blocking PTY master for reads (os.read after select confirms readability).
+        Large read buffer (256KB) so we drain as much as the kernel has ready.
         """
-        # Socket: blocking (sendall is safe after select confirms writability)
-        # PTY master: non-blocking (os.read after select confirms readability)
         self.sock.setblocking(True)
         os.set_blocking(self.master_fd, False)
 
         write_buf = b""
 
         while True:
-            # Check if child has exited (non-blocking)
             try:
                 pid, status = os.waitpid(self.child_pid, os.WNOHANG)
                 if pid != 0:
@@ -171,14 +153,10 @@ class PtyRelay:
                 log.warning("PTY relay: child already reaped")
                 return 1
 
-            # Build select lists.
-            # Always watch socket for client input.
-            # Watch PTY for output only when write buffer is below threshold.
             read_fds = [self.sock]
-            if len(write_buf) < WRITE_HIGH_WATER:
+            if len(write_buf) < RELAY_BUF_SIZE:
                 read_fds.append(self.master_fd)
 
-            # Watch socket for writability only when we have data to send.
             write_fds = [self.sock] if write_buf else []
 
             try:
@@ -189,47 +167,51 @@ class PtyRelay:
                 log.error("PTY relay: select failed: %s", e)
                 break
 
-            # --- Write to socket (drain buffer) ---
-            # select confirmed socket is writable → sendall won't block long.
             if write_buf and self.sock in writable:
                 try:
                     self.sock.sendall(write_buf)
                     write_buf = b""
-                except (BrokenPipeError, OSError) as e:
+                except (BrokenPipeError, ConnectionResetError):
+                    return 1
+                except OSError as e:
                     log.error("PTY relay: socket send failed: %s", e)
                     return 1
 
-            # --- Read from readable FDs ---
             for fd in readable:
-                try:
-                    if fd is self.sock:
-                        data = self.sock.recv(4096)
-                        if not data:
-                            # Client disconnected
-                            try:
-                                os.kill(-self.child_pid, signal.SIGHUP)
-                            except ProcessLookupError:
-                                pass
-                            return 0
+                if fd is self.sock:
+                    try:
+                        data = self.sock.recv(RELAY_BUF_SIZE)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return 1
+                    if not data:
+                        try:
+                            os.kill(-self.child_pid, signal.SIGHUP)
+                        except ProcessLookupError:
+                            pass
+                        return 0
 
-                        data = self._process_relay_data(data)
-                        if data:
-                            # Write client input to PTY (non-blocking).
-                            # If PTY buffer is full (backpressure), drop the
-                            # input — it's a keystroke during heavy output.
-                            try:
-                                os.write(self.master_fd, data)
-                            except BlockingIOError:
-                                pass
+                    data = self._process_relay_data(data)
+                    if data:
+                        try:
+                            os.write(self.master_fd, data)
+                        except BlockingIOError:
+                            pass
+                        except OSError:
+                            return 1
 
-                    elif fd is self.master_fd:
-                        data = os.read(self.master_fd, 4096)
-                        if data:
-                            write_buf += data
-
-                except (OSError, BrokenPipeError) as e:
-                    log.error("PTY relay: I/O error: %s", e)
-                    return 1
+                elif fd is self.master_fd:
+                    try:
+                        data = os.read(self.master_fd, RELAY_BUF_SIZE)
+                    except BlockingIOError:
+                        continue
+                    except OSError as e:
+                        if e.errno == errno.EIO:
+                            return 1
+                        log.error("PTY relay: PTY read failed: %s", e)
+                        return 1
+                    if not data:
+                        return 1
+                    write_buf += data
 
         return 1
 
@@ -274,21 +256,20 @@ class PtyRelay:
                 self.sock.sendall(write_buf)
                 write_buf = b""
                 break
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, ConnectionResetError, OSError):
                 break
 
-        # Drain any remaining PTY data
         for _ in range(100):
             try:
                 readable, _, _ = select.select([self.master_fd], [], [], 0.05)
                 if not readable:
                     break
-                data = os.read(self.master_fd, 4096)
+                data = os.read(self.master_fd, RELAY_BUF_SIZE)
                 if not data:
                     break
                 try:
                     self.sock.sendall(data)
-                except (BrokenPipeError, OSError):
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     break
             except (OSError, ValueError):
                 break

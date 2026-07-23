@@ -145,12 +145,13 @@ class Daemon:
         overlay_name = msg.get("overlay", "@base")
         args = msg.get("args", [])
         env = msg.get("env", {})
-        norc = msg.get("norc", False)
 
-        # After this response, socket enters raw relay mode
+        # After this response, socket enters raw relay mode.
+        # Remove the handshake timeout — the relay manages its own I/O.
+        sock.settimeout(None)
         Message.send(sock, {"ok": True})
 
-        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env, norc=norc)
+        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env)
         exit_code = relay.run()
 
         self.handler.teardown_chroot(mount_ctx)
