@@ -360,15 +360,17 @@ class CommandHandler:
 
         # Exec user's login shell directly — no su wrapper.
         # preexec_fn drops privileges after fork, before exec.
-        def _drop_privs():
+        def _setup():
+            os.chroot(root)
+            # CWD is already the host-side home_dir; after chroot it becomes /home/user
             os.setgroups([pw.pw_gid])
             os.setgid(pw.pw_gid)
             os.setuid(pw.pw_uid)
 
         if args:
-            cmd = [CHROOT_BIN, root, "/bin/bash", "--login", "-c", shlex.join(args)]
+            cmd = ["/bin/bash", "--login", "-c", shlex.join(args)]
         else:
-            cmd = [CHROOT_BIN, root, "/bin/bash", "--login"]
+            cmd = ["/bin/bash", "--login"]
 
         proc = subprocess.Popen(
             cmd,
@@ -376,7 +378,7 @@ class CommandHandler:
             stderr=subprocess.PIPE,
             env=full_env,
             cwd=cwd,
-            preexec_fn=_drop_privs,
+            preexec_fn=_setup,
         )
 
         fds = {proc.stdout: "stdout", proc.stderr: "stderr"}
