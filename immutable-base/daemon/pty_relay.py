@@ -71,14 +71,14 @@ class PtyRelay:
             if slave_fd > 2:
                 os.close(slave_fd)
 
-            # Drop privileges to the target user
+            # Chroot first (requires root), then drop privileges.
+            # CWD is inherited and becomes / after chroot.
+            os.chroot(self.root)
+            os.chdir(f"/home/{self.username}")
+
             os.setgroups([gid])
             os.setgid(gid)
             os.setuid(uid)
-
-            # Chroot into the overlay
-            os.chroot(self.root)
-            os.chdir("/")
 
             # Exec a login shell — bash detects the PTY, sources .profile + .bashrc
             os.execve("/bin/bash", ["bash", "--login"], env)

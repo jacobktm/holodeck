@@ -342,7 +342,7 @@ class CommandHandler:
         cmd = [CHROOT_BIN, root, "su", username, "-c"]
 
         if args:
-            cmd.append("bash -l -c " + shlex.quote("cd && " + shlex.join(args)))
+            cmd.append("bash -l -c " + shlex.quote(shlex.join(args)))
         else:
             cmd.append("bash -l")
 
@@ -357,11 +357,17 @@ class CommandHandler:
         }
         full_env.update({k: v for k, v in env.items() if k not in ("HOME", "USER")})
 
+        # Set CWD to user's home inside the overlay.
+        # chroot changes root but preserves CWD, so host path becomes relative.
+        home_dir = f"{root}/home/{username}"
+        cwd = home_dir if os.path.isdir(home_dir) else root
+
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=full_env,
+            cwd=cwd,
             preexec_fn=os.setsid,
         )
 
