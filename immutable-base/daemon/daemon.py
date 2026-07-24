@@ -38,6 +38,17 @@ class Daemon:
 
         sock = self._create_listener()
 
+        # Ensure /pool is mounted before accepting clients.
+        # This is normally handled by fstab + local-fs.target, but
+        # verify as a safety net so commands don't fail with confusing errors.
+        try:
+            if not os.path.ismount("/pool"):
+                log.info("/pool not mounted, attempting mount...")
+                self.handler.btrfs.mount_pool()
+                log.info("/pool mounted successfully")
+        except Exception as e:
+            log.warning("Failed to mount /pool: %s — commands may fail", e)
+
         log.info("Immutable daemon started on %s",
                  SOCKET_PATH if self.from_systemd
                  else sock.getsockname())
@@ -105,6 +116,11 @@ class Daemon:
             if cmd is None:
                 Message.send(client_sock, {"ok": False, "error": "Missing 'cmd' field"})
                 return
+
+            # Reset SIGCHLD to default so PTY relay can waitpid() its child.
+            # The main daemon uses SIG_IGN to auto-reap client-handler
+            # children, but PTY sessions need explicit waitpid for exit status.
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
 
             if cmd == "pty":
                 self._handle_pty_session(client_sock, msg)

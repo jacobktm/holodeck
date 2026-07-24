@@ -238,9 +238,8 @@ def _relay_loop(sock, stdin_fd):
     while True:
         try:
             readable, _, _ = select.select(
-                [stdin_fd] if not sent_eof else [],
-                [sock],
-                [], 0.1,
+                [stdin_fd, sock] if not sent_eof else [sock],
+                [], [], 0.1,
             )
         except (ValueError, OSError):
             break

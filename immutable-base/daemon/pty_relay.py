@@ -3,6 +3,7 @@ import os
 import pty
 import select
 import signal
+import socket
 import struct
 import fcntl
 import termios
@@ -109,6 +110,15 @@ class PtyRelay:
         try:
             exit_code = self._relay_loop()
         finally:
+            # Drain any remaining PTY output before checking exit status.
+            # This must happen before waitpid: if SIGCHLD is SIG_IGN the
+            # child is already auto-reaped and waitpid would raise ECHILD,
+            # skipping the drain entirely and losing output.
+            try:
+                self._drain_remaining(b"")
+            except Exception:
+                pass
+
             try:
                 _, status = os.waitpid(pid, os.WNOHANG)
                 if pid != 0 and _ == 0:
@@ -136,28 +146,39 @@ class PtyRelay:
     def _relay_loop(self) -> int:
         """Relay bytes between socket and PTY master.
 
-        Blocking socket for sends (sendall after select confirms writability).
-        Non-blocking PTY master for reads (os.read after select confirms readability).
-        Large read buffer (256KB) so we drain as much as the kernel has ready.
+        Uses non-blocking sends (MSG_DONTWAIT) to avoid deadlocks when the
+        client is slow to read.  Data that couldn't be sent is retained in
+        write_buf and retried on the next select() iteration.
         """
         self.sock.setblocking(True)
         os.set_blocking(self.master_fd, False)
 
         write_buf = b""
+        child_exited = False
+        exit_status = None
 
         while True:
-            try:
-                pid, status = os.waitpid(self.child_pid, os.WNOHANG)
-                if pid != 0:
-                    self._drain_remaining(write_buf)
-                    if os.WIFEXITED(status):
-                        return os.WEXITSTATUS(status)
-                    elif os.WIFSIGNALED(status):
-                        return 128 + os.WTERMSIG(status)
-                    return 1
-            except ChildProcessError:
-                log.warning("PTY relay: child already reaped")
-                return 1
+            # Reap the child if it has exited.  With SIGCHLD=SIG_IGN the
+            # child may already be auto-reaped, so ECHILD is expected.
+            if not child_exited:
+                try:
+                    pid, status = os.waitpid(self.child_pid, os.WNOHANG)
+                    if pid != 0:
+                        child_exited = True
+                        exit_status = status
+                except ChildProcessError:
+                    child_exited = True
+
+            # When the child has exited and all buffered data has been sent,
+            # drain any remaining PTY output and return the exit code.
+            if child_exited and not write_buf:
+                self._drain_remaining(b"")
+                if exit_status is not None:
+                    if os.WIFEXITED(exit_status):
+                        return os.WEXITSTATUS(exit_status)
+                    elif os.WIFSIGNALED(exit_status):
+                        return 128 + os.WTERMSIG(exit_status)
+                return 0
 
             read_fds = [self.sock]
             if len(write_buf) < RELAY_BUF_SIZE:
@@ -173,15 +194,23 @@ class PtyRelay:
                 log.error("PTY relay: select failed: %s", e)
                 break
 
+            # Non-blocking send: push as much as the kernel will accept.
+            # This prevents deadlocks when the client is slow to read.
             if write_buf and self.sock in writable:
                 try:
-                    self.sock.sendall(write_buf)
-                    write_buf = b""
+                    sent = self.sock.send(write_buf, socket.MSG_DONTWAIT)
+                    if sent > 0:
+                        write_buf = write_buf[sent:]
                 except (BrokenPipeError, ConnectionResetError):
                     return 1
+                except BlockingIOError:
+                    pass
                 except OSError as e:
-                    log.error("PTY relay: socket send failed: %s", e)
-                    return 1
+                    if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
+                        pass
+                    else:
+                        log.error("PTY relay: socket send failed: %s", e)
+                        return 1
 
             for fd in readable:
                 if fd is self.sock:
