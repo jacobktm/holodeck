@@ -23,6 +23,7 @@ _immutable() {
     # First argument: subcommands
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+        _immutable_fix_space
         return
     fi
 
@@ -33,6 +34,7 @@ _immutable() {
             # Second argument: overlay names
             if [ "$COMP_CWORD" -eq 2 ]; then
                 _immutable_overlays
+                _immutable_fix_space
                 return
             fi
             # For 'run', third+ args are commands — no completion
@@ -51,6 +53,13 @@ _immutable() {
             esac
             ;;
     esac
+}
+
+_immutable_fix_space() {
+    # Ensure a trailing space is appended after single completions
+    if [ "${#COMPREPLY[@]}" -eq 1 ]; then
+        COMPREPLY[0]+=" "
+    fi
 }
 
 complete -F _immutable immutable
