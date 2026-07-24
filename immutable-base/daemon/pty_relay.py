@@ -37,8 +37,8 @@ class PtyRelay:
     def run(self) -> int:
         """Execute the shell session. Returns the shell's exit code."""
         master_fd, slave_fd = pty.openpty()
-        log.info("PTY allocated: master_fd=%d slave_fd=%d open_fds=%d",
-                 master_fd, slave_fd, len(os.listdir(f"/proc/{os.getpid()}/fd")))
+        log.debug("PTY allocated: master_fd=%d slave_fd=%d",
+                 master_fd, slave_fd)
 
         try:
             winsize = struct.pack("HHHH", 24, 80, 0, 0)
@@ -136,8 +136,7 @@ class PtyRelay:
                 log.warning("PTY child already reaped")
             try:
                 os.close(master_fd)
-                log.info("master_fd %d closed, open_fds=%d",
-                         master_fd, len(os.listdir(f"/proc/{os.getpid()}/fd")))
+                log.debug("master_fd %d closed", master_fd)
             except OSError:
                 pass
 

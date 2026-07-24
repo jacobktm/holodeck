@@ -9,7 +9,7 @@ import sys
 import signal
 import socket
 import logging
-import logging.handlers
+
 
 # Add daemon directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -64,11 +64,9 @@ class Daemon:
             pid = os.fork()
             if pid == 0:
                 sock.close()
-                log.info("Client child %d started, open_fds=%d",
-                         os.getpid(), len(os.listdir(f"/proc/{os.getpid()}/fd")))
+                log.debug("Client child %d started", os.getpid())
                 self._handle_client(client_sock)
-                log.info("Client child %d exiting, open_fds=%d",
-                         os.getpid(), len(os.listdir(f"/proc/{os.getpid()}/fd")))
+                log.debug("Client child %d exiting", os.getpid())
                 os._exit(0)
             else:
                 client_sock.close()
@@ -177,14 +175,12 @@ class Daemon:
         relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env)
         exit_code = relay.run()
         t1 = time.monotonic()
-        log.info("PTY relay ran for %.2fs, exit_code=%d", t1 - t0, exit_code)
+        log.debug("PTY relay ran for %.2fs, exit_code=%d", t1 - t0, exit_code)
 
         t2 = time.monotonic()
         self.handler.teardown_chroot(mount_ctx)
         t3 = time.monotonic()
-        log.info("teardown_chroot took %.2fs", t3 - t2)
-
-        log.info("PTY session ended, exit_code=%d", exit_code)
+        log.debug("teardown_chroot took %.2fs", t3 - t2)
 
     def _handle_signal(self, signum, frame):
         log.info("Received signal %d, shutting down", signum)
@@ -196,7 +192,6 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.handlers.SysLogHandler("/dev/log"),
             logging.StreamHandler(sys.stderr),
         ],
     )

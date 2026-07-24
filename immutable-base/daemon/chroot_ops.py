@@ -35,7 +35,7 @@ class ChrootMount:
                 mounts_done.append(dst)
                 return True
             except subprocess.CalledProcessError as e:
-                log.warning("Mount failed: %s -> %s: %s", src, dst, e)
+                log.debug("Mount failed: %s -> %s: %s", src, dst, e)
                 return False
 
         def _mkdir_p(path):
@@ -69,30 +69,30 @@ class ChrootMount:
         if os.path.ismount(f"{root}/sys"):
             mounts_done.append(f"{root}/sys")
 
-        # --- /run bind mount diagnostics ---
+        # --- /run bind mount ---
         host_run_user = "/run/user/1000"
-        log.info("=== /run bind mount diagnostics ===")
-        log.info("Host %s exists=%s", host_run_user, os.path.exists(host_run_user))
+        log.debug("=== /run bind mount diagnostics ===")
+        log.debug("Host %s exists=%s", host_run_user, os.path.exists(host_run_user))
         if os.path.exists(host_run_user):
             try:
                 st = os.stat(host_run_user)
-                log.info("Host %s uid=%d gid=%d mode=%o", host_run_user, st.st_uid, st.st_gid, st.st_mode & 0o777)
-                log.info("Host %s contents: %s", host_run_user, os.listdir(host_run_user))
+                log.debug("Host %s uid=%d gid=%d mode=%o", host_run_user, st.st_uid, st.st_gid, st.st_mode & 0o777)
+                log.debug("Host %s contents: %s", host_run_user, os.listdir(host_run_user))
             except OSError as e:
-                log.info("Host %s stat failed: %s", host_run_user, e)
-        log.info("Host /run top-level: %s", sorted(os.listdir("/run")))
+                log.debug("Host %s stat failed: %s", host_run_user, e)
+        log.debug("Host /run top-level: %s", sorted(os.listdir("/run")))
 
         overlay_run = f"{root}/run"
         if os.path.isdir(overlay_run):
             try:
-                log.info("Overlay /run before mount: %s", sorted(os.listdir(overlay_run)))
+                log.debug("Overlay /run before mount: %s", sorted(os.listdir(overlay_run)))
                 overlay_run_user = f"{overlay_run}/user/1000"
                 if os.path.exists(overlay_run_user):
                     st = os.stat(overlay_run_user)
-                    log.info("Overlay %s before mount: uid=%d gid=%d mode=%o",
+                    log.debug("Overlay %s before mount: uid=%d gid=%d mode=%o",
                              overlay_run_user, st.st_uid, st.st_gid, st.st_mode & 0o777)
             except OSError as e:
-                log.info("Overlay /run inspection failed: %s", e)
+                log.debug("Overlay /run inspection failed: %s", e)
 
         _mkdir_p(overlay_run)
         subprocess.run(
@@ -105,16 +105,16 @@ class ChrootMount:
         )
         run_mounted = os.path.ismount(overlay_run)
 
-        log.info("After rbind: ismount=%s", run_mounted)
+        log.debug("After rbind: ismount=%s", run_mounted)
         try:
-            log.info("Overlay /run after mount: %s", sorted(os.listdir(overlay_run)))
+            log.debug("Overlay /run after mount: %s", sorted(os.listdir(overlay_run)))
             if os.path.exists(f"{overlay_run}/user/1000"):
                 st = os.stat(f"{overlay_run}/user/1000")
-                log.info("Overlay /run/user/1000 after mount: uid=%d gid=%d mode=%o",
+                log.debug("Overlay /run/user/1000 after mount: uid=%d gid=%d mode=%o",
                          st.st_uid, st.st_gid, st.st_mode & 0o777)
-                log.info("Overlay /run/user/1000 contents: %s", os.listdir(f"{overlay_run}/user/1000"))
+                log.debug("Overlay /run/user/1000 contents: %s", os.listdir(f"{overlay_run}/user/1000"))
         except OSError as e:
-            log.info("Overlay /run after-mount inspection failed: %s", e)
+            log.debug("Overlay /run after-mount inspection failed: %s", e)
 
         # --- /tmp bind mount ---
         _mkdir_p(f"{root}/tmp")
@@ -154,9 +154,12 @@ class ChrootMount:
 
         # DNS resolution
         try:
-            shutil.copy2("/etc/resolv.conf", f"{root}/etc/resolv.conf")
+            src_resolv = Path("/etc/resolv.conf").resolve()
+            dst_resolv = Path(f"{root}/etc/resolv.conf").resolve()
+            if src_resolv != dst_resolv:
+                shutil.copy2("/etc/resolv.conf", f"{root}/etc/resolv.conf")
         except (OSError, shutil.Error) as e:
-            log.warning("Failed to copy resolv.conf: %s", e)
+            log.debug("Failed to copy resolv.conf: %s", e)
 
         return {
             "root": root,
