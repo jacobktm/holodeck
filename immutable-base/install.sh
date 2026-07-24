@@ -122,9 +122,12 @@ btrfs subvolume create "$MOUNT_POINT/@data"
 btrfs subvolume create "$MOUNT_POINT/@snapshots"
 btrfs subvolume create "$MOUNT_POINT/@overlay-init"
 
-# Create @data user directories
+# Create @data user directories and default dotfile stubs
 for dir in Documents Downloads Pictures Videos Music; do
     mkdir -p "$MOUNT_POINT/@data/$dir"
+done
+for dotfile in .bash_history .profile .bashrc .gitconfig; do
+    touch "$MOUNT_POINT/@data/$dotfile"
 done
 
 umount "$MOUNT_POINT"

@@ -4,12 +4,37 @@ import shutil
 import subprocess
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 log = logging.getLogger("immutable-daemon")
 
-DATA_DIRS = ["Documents", "Downloads", "Pictures", "Videos", "Music"]
-DOTFILES = [".bash_history", ".profile", ".bashrc", ".gitconfig"]
+DATA_CONF = "/etc/immutable-data.conf"
+
+# Defaults written on first boot if config is missing
+DEFAULT_DATA_PATHS = [
+    # Directories
+    "Documents", "Downloads", "Pictures", "Videos", "Music",
+    # Dotfiles
+    ".bash_history", ".profile", ".bashrc", ".gitconfig",
+]
+
+
+def load_data_paths() -> List[str]:
+    """Read the list of paths to bind-mount from @data into user home."""
+    try:
+        lines = Path(DATA_CONF).read_text().splitlines()
+        return [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+    except FileNotFoundError:
+        return list(DEFAULT_DATA_PATHS)
+
+
+def save_data_paths(paths: List[str]):
+    """Write the list of data paths to the config file."""
+    Path(DATA_CONF).write_text("# Paths in @data to bind-mount into each overlay's /home/<user>\n"
+                               "# One entry per line. Directories and dotfiles both work.\n")
+    with open(DATA_CONF, "a") as f:
+        for p in paths:
+            f.write(p + "\n")
 
 
 class ChrootMount:
@@ -149,25 +174,18 @@ class ChrootMount:
         if not is_readonly and os.path.isdir(data_path):
             _mkdir_p(home_dir := f"{root}/home/{username}")
 
-            for dir_name in DATA_DIRS:
-                src = f"{data_path}/{dir_name}"
-                dst = f"{home_dir}/{dir_name}"
+            for item_name in load_data_paths():
+                src = f"{data_path}/{item_name}"
+                dst = f"{home_dir}/{item_name}"
                 _mkdir_p(src)
-                _mkdir_p(dst)
-                if _bind(src, dst):
-                    data_mounts.append(dst)
-
-            for dotfile in DOTFILES:
-                src = f"{data_path}/{dotfile}"
-                dst = f"{home_dir}/{dotfile}"
-                if not os.path.exists(src):
-                    Path(src).touch()
-                if os.path.exists(dst) and not os.path.isfile(dst):
-                    # dst is a dir where we expect a file — remove it
+                # For dotfiles, ensure the destination path exists as expected type
+                if item_name.startswith(".") and os.path.exists(dst) and not os.path.isfile(dst):
                     try:
                         os.rmdir(dst)
                     except OSError:
                         pass
+                else:
+                    _mkdir_p(dst)
                 if _bind(src, dst):
                     data_mounts.append(dst)
 
