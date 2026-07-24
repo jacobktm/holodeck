@@ -92,6 +92,7 @@ create_sources_file() {
     cat > "$ROOTFS_DIR/etc/apt/sources.list.d/$filename" <<SOURCES
 X-Repolib-Name: ${name}
 Enabled: yes
+Architectures: amd64 i386
 Types: ${types}
 URIs: ${uris}
 Suites: ${suites}
@@ -237,6 +238,7 @@ KERNELSTUB
 install_base_packages() {
     # ca-certificates first (needed for HTTPS)
     echo "Installing ca-certificates..."
+    run_in_chroot "dpkg --add-architecture i386"
     run_in_chroot "apt-get update -o Dir::Etc::sourceparts=/dev/null"
     run_in_chroot "apt-get install -y ca-certificates"
 

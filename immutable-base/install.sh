@@ -247,6 +247,7 @@ fi
 
 # ── Install packages ──
 
+chroot "$MOUNT_POINT" dpkg --add-architecture i386
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get update -y
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     initramfs-tools-core initramfs-tools \
