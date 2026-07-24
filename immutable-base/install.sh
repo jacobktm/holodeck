@@ -495,7 +495,8 @@ touch "$MOUNT_POINT/usr/lib/immutable/__init__.py"
 cp "$(dirname "$0")/immutable-daemon.service" "$MOUNT_POINT/etc/systemd/system/"
 cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
 
-# Create socket directory
+# Create socket directory at boot via tmpfiles.d
+cp "$(dirname "$0")/tmpfiles-immutable.conf" "$MOUNT_POINT/etc/tmpfiles.d/immutable.conf"
 mkdir -p "$MOUNT_POINT/run/immutable"
 
 # Enable daemon socket

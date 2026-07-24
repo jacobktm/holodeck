@@ -33,6 +33,7 @@ echo "  Installed CLI to /usr/local/bin/immutable"
 # Install systemd units
 cp "$SCRIPT_DIR/immutable-daemon.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/immutable-daemon.socket" /etc/systemd/system/
+cp "$SCRIPT_DIR/tmpfiles-immutable.conf" /etc/tmpfiles.d/immutable.conf
 echo "  Installed systemd units"
 
 # Create socket directory
