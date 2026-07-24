@@ -905,6 +905,101 @@ fi
 echo ""
 
 # ════════════════════════════════════════════
+# CLEAN-BOOT TESTS
+# ════════════════════════════════════════════
+
+echo "══════════════════════════════════════"
+echo "  CLEAN-BOOT"
+echo "══════════════════════════════════════"
+
+# Test clean-boot with no stale entries
+CLEAN_OUTPUT=$(immutable clean-boot 2>&1) || true
+echo "$CLEAN_OUTPUT"
+if echo "$CLEAN_OUTPUT" | grep -q "No stale boot entries\|Kept"; then
+    log_pass "immutable clean-boot succeeded"
+else
+    log_fail "immutable clean-boot failed: $CLEAN_OUTPUT"
+fi
+
+# Test clean-boot protects immutable.conf, recovery.conf, and previous.conf
+if echo "$CLEAN_OUTPUT" | grep -q "immutable.conf" && echo "$CLEAN_OUTPUT" | grep -q "recovery.conf" && echo "$CLEAN_OUTPUT" | grep -q "previous.conf"; then
+    log_pass "clean-boot preserves immutable.conf, recovery.conf, and previous.conf"
+else
+    log_fail "clean-boot did not list all protected entries"
+fi
+
+# Test clean-boot removes entry with missing kernel
+ENTRIES_DIR="/boot/efi/loader/entries"
+STALE_ENTRY="$ENTRIES_DIR/stale-test.conf"
+if [ -d "$ENTRIES_DIR" ]; then
+    echo "title Stale test kernel
+linux /EFI/test-nonexistent/vmlinuz-test.efi
+initrd /EFI/test-nonexistent/initrd-test.img
+options quiet splash" > "$STALE_ENTRY"
+
+    CLEAN_OUTPUT2=$(immutable clean-boot 2>&1) || true
+    echo "$CLEAN_OUTPUT2"
+    if echo "$CLEAN_OUTPUT2" | grep -q "stale-test.conf" && echo "$CLEAN_OUTPUT2" | grep -q "Removed"; then
+        log_pass "clean-boot removed stale entry with missing kernel"
+    else
+        log_fail "clean-boot did not remove stale entry"
+    fi
+    rm -f "$STALE_ENTRY"
+else
+    log_skip "Boot entries directory not found — skipping stale entry test"
+fi
+
+echo ""
+
+# ════════════════════════════════════════════
+# HOOK TESTS
+# ════════════════════════════════════════════
+
+echo "══════════════════════════════════════"
+echo "  KERNELSTUB HOOKS"
+echo "══════════════════════════════════════"
+
+# Check that immutable-aware hooks are installed
+for HOOK_PATH in \
+    /etc/kernel/postinst.d/zz-kernelstub \
+    /etc/kernel/postinst.d/zz-systemd-boot \
+    /etc/initramfs/post-update.d/zz-kernelstub \
+    /etc/initramfs/post-update.d/systemd-boot; do
+    if [ -f "$HOOK_PATH" ]; then
+        if head -3 "$HOOK_PATH" | grep -q "immutable"; then
+            log_pass "Immutable-aware hook: $HOOK_PATH"
+        else
+            log_fail "Hook exists but not immutable-aware: $HOOK_PATH"
+        fi
+    else
+        log_fail "Hook missing: $HOOK_PATH"
+    fi
+done
+
+echo ""
+
+# ════════════════════════════════════════════
+# PREVIOUS KERNEL BOOT ENTRY TESTS
+# ════════════════════════════════════════════
+
+echo "══════════════════════════════════════"
+echo "  PREVIOUS KERNEL BOOT ENTRY"
+echo "══════════════════════════════════════"
+
+if [ -f "$ENTRIES_DIR/previous.conf" ]; then
+    log_pass "previous.conf boot entry exists"
+    if grep -q "vmlinuz-previous" "$ENTRIES_DIR/previous.conf"; then
+        log_pass "previous.conf references vmlinuz-previous.efi"
+    else
+        log_fail "previous.conf does not reference vmlinuz-previous.efi"
+    fi
+else
+    log_fail "previous.conf boot entry not found"
+fi
+
+echo ""
+
+# ════════════════════════════════════════════
 # SUMMARY
 # ════════════════════════════════════════════
 

@@ -267,6 +267,18 @@ install_base_packages() {
     run_in_chroot "apt-get autoremove --purge -y"
     run_in_chroot "apt-get clean -y"
 
+    # Install immutable-aware kernelstub hooks (replaces stock hooks from packages)
+    echo "Installing immutable-aware kernelstub hooks..."
+    HOOKS_SRC="$(dirname "$0")/hooks"
+    install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
+        "$ROOTFS_DIR/etc/kernel/postinst.d/zz-kernelstub"
+    install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
+        "$ROOTFS_DIR/etc/kernel/postinst.d/zz-systemd-boot"
+    install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
+        "$ROOTFS_DIR/etc/initramfs/post-update.d/zz-kernelstub"
+    install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
+        "$ROOTFS_DIR/etc/initramfs/post-update.d/systemd-boot"
+
     # Remove temporary files
     rm -rf "$ROOTFS_DIR"/{tmp/*,var/tmp/*,var/cache/apt/archives/*.deb}
 }

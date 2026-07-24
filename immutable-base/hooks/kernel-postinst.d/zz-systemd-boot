@@ -1,0 +1,18 @@
+#!/bin/sh
+# Immutable-aware systemd-boot hook for kernel post-install.
+# Inside an overlay chroot: skip silently.
+# On the host: run normally.
+
+set -e
+
+# Detect chroot: /proc/1/root differs from our root
+if [ "$(readlink -f /proc/1/root)" != "/" ]; then
+    echo "immutable: skipping systemd-boot (running in overlay chroot)"
+    exit 0
+fi
+
+test -x /usr/bin/bootctl || exit 0
+bootctl is-installed --quiet || exit 0
+
+echo "Installing kernel version $1 in systemd-boot..."
+kernel-install add "$1" "$2"

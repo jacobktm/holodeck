@@ -97,6 +97,13 @@ Switch to the recovery overlay.
 Re-snapshot the recovery overlay from
 .BR @base .
 .TP
+.B clean-boot
+Remove stale boot entries from the ESP whose kernel files
+no longer exist.
+Protected entries
+.RI ( immutable.conf ", " recovery.conf ", " previous.conf )
+are never removed.
+.TP
 .B update
 Copy the
 .B immutable

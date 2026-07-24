@@ -1,0 +1,17 @@
+#!/bin/bash
+# Immutable-aware kernelstub wrapper for initramfs post-update.
+# Inside an overlay chroot: skip silently (overlay kernels don't affect host boot).
+# On the host: run kernelstub normally.
+
+# Detect chroot: /proc/1/root differs from our root
+if [ "$(readlink -f /proc/1/root)" != "/" ]; then
+    echo "immutable: skipping kernelstub (running in overlay chroot)"
+    exit 0
+fi
+
+KERNEL="/boot/vmlinuz-$1"
+INITRD="$2"
+
+exec kernelstub \
+    --verbose \
+    --preserve-live-mode

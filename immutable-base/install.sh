@@ -264,12 +264,19 @@ chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y
 # ── Disable zz-kernelstub hook to prevent live ISO options from leaking ──
 
 # The live ISO kernel package installs zz-kernelstub which creates entries with
-# boot=casper and live-media-path options. We need to disable it so our config
-# is used instead.
-if [ -f "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub" ]; then
-    echo "Disabling live ISO zz-kernelstub hook..."
-    chmod -x "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
-fi
+# boot=casper and live-media-path options. Replace with immutable-aware hooks.
+echo "Installing immutable-aware kernelstub hooks..."
+HOOKS_SRC="$(dirname "$0")/hooks"
+# Kernel postinst hooks
+install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
+    "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
+install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
+    "$MOUNT_POINT/etc/kernel/postinst.d/zz-systemd-boot"
+# Initramfs post-update hooks
+install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
+    "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
+install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
+    "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
 
 # ── fstab ──
 
@@ -368,6 +375,15 @@ initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
 options root=UUID=$ROOT_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-recovery ${NVIDIA_BOOT_OPTS}
 ENTRY
     echo "Created: $ESP_ENTRIES/recovery.conf"
+
+    # Previous kernel boot entry — safety net for kernel updates
+    cat > "$ESP_ENTRIES/previous.conf" <<ENTRY
+title Pop!_OS (previous kernel)
+linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz-previous.efi
+initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img-previous
+options ${KERNEL_OPTS}
+ENTRY
+    echo "Created: $ESP_ENTRIES/previous.conf"
 fi
 
 # ── Set loader timeout ──

@@ -18,7 +18,7 @@ _immutable() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    local subcommands="create shell run list list-names switch reset delete status lock unlock recovery reset-recovery update help"
+    local subcommands="create shell run list list-names switch reset delete status lock unlock recovery reset-recovery clean-boot update help"
 
     # Completing the command name itself (e.g. immu<TAB>)
     if [ "$COMP_CWORD" -eq 0 ]; then

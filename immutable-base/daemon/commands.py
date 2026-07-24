@@ -111,6 +111,7 @@ class CommandHandler:
             "lock":            self._cmd_lock,
             "unlock":          self._cmd_unlock,
             "reset-recovery":  self._cmd_reset_recovery,
+            "clean-boot":      self._cmd_clean_boot,
         }
 
         handler = dispatch.get(cmd)
@@ -420,6 +421,53 @@ class CommandHandler:
         self.btrfs.snapshot(src, recovery)
         self.btrfs.set_property(recovery, "ro", "true")
         return {"ok": True, "output": f"Recovery overlay recreated from @base (read-only)\n{recovery}"}
+
+    def _cmd_clean_boot(self, msg):
+        """Remove stale boot entries whose kernel files no longer exist on the ESP."""
+        esp = "/boot/efi"
+        entries_dir = f"{esp}/loader/entries"
+        if not os.path.isdir(entries_dir):
+            return {"ok": False, "error": f"Boot entries directory not found: {entries_dir}"}
+
+        # Entries managed by the immutable system — never delete these
+        protected = {"immutable.conf", "recovery.conf", "previous.conf"}
+
+        removed = []
+        kept = []
+        for entry in sorted(Path(entries_dir).glob("*.conf")):
+            name = entry.name
+            if name in protected:
+                kept.append(name)
+                continue
+
+            # Check if the kernel referenced by this entry exists on the ESP
+            content = entry.read_text()
+            linux_match = re.search(r"^linux\s+(\S+)", content, re.MULTILINE)
+            if not linux_match:
+                kept.append(name)
+                continue
+
+            kernel_path = f"{esp}/{linux_match.group(1)}"
+            if not os.path.isfile(kernel_path):
+                entry.unlink()
+                removed.append(name)
+            else:
+                kept.append(name)
+
+        lines = []
+        if removed:
+            lines.append(f"Removed {len(removed)} stale boot entry/entries:")
+            for r in removed:
+                lines.append(f"  - {r}")
+        else:
+            lines.append("No stale boot entries found.")
+
+        if kept:
+            lines.append(f"\nKept {len(kept)} active entry/entries:")
+            for k in kept:
+                lines.append(f"  + {k}")
+
+        return {"ok": True, "output": "\n".join(lines)}
 
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""
