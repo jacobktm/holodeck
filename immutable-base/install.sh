@@ -298,8 +298,8 @@ cd - >/dev/null
 echo "Configuring boot entry..."
 ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
 
-# Build kernel options (debug enabled until boot issues resolved)
-KERNEL_OPTS="root=UUID=$ROOT_UUID ro loglevel=0 systemd.show_status=false systemd.log_level=debug systemd.log_target=kmsg rootflags=subvol=@overlay-init"
+# Build kernel options
+KERNEL_OPTS="root=UUID=$ROOT_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-init"
 if [ -n "$NVIDIA_BOOT_OPTS" ]; then
     KERNEL_OPTS="$KERNEL_OPTS $NVIDIA_BOOT_OPTS"
 fi
@@ -342,7 +342,7 @@ ENTRY
 title Pop!_OS Recovery
 linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
 initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
-options root=UUID=$ROOT_UUID ro loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-recovery ${NVIDIA_BOOT_OPTS}
+options root=UUID=$ROOT_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-recovery ${NVIDIA_BOOT_OPTS}
 ENTRY
     echo "Created: $ESP_ENTRIES/recovery.conf"
 fi
