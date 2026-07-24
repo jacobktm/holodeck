@@ -18,8 +18,12 @@ BASE_SUBVOL = "@base"
 DATA_SUBVOL = "@data"
 OVERLAY_PREFIX = "@overlay-"
 RECOVERY_OVERLAY = "recovery"
+INIT_OVERLAY = "init"
 IMMUTABLE_CONF = "/etc/immutable.conf"
 CHROOT_BIN = shutil.which("chroot") or "/usr/sbin/chroot"
+
+# System overlays that must never be deleted or reset
+SYSTEM_OVERLAYS = frozenset({INIT_OVERLAY, RECOVERY_OVERLAY})
 
 # Commands that require password authentication
 AUTH_REQUIRED = {"unlock", "switch"}
@@ -199,6 +203,27 @@ class CommandHandler:
         if not os.path.ismount(POOL):
             self.btrfs.mount_pool()
 
+    def get_running_subvol(self) -> Optional[str]:
+        """Detect the currently running root subvolume from /proc/mounts."""
+        try:
+            with open("/proc/mounts") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[1] == "/":
+                        for opt in parts[3].split(","):
+                            if opt.startswith("subvol="):
+                                return opt.split("=", 1)[1]
+        except (FileNotFoundError, OSError):
+            pass
+        return None
+
+    def _revert_boot_to_init(self):
+        """Revert the boot entry to @overlay-init."""
+        try:
+            self.boot.set_active_overlay(INIT_OVERLAY)
+        except Exception:
+            pass
+
     def _cmd_list(self, msg):
         self._ensure_pool()
         lines = ["Overlays:", ""]
@@ -303,12 +328,28 @@ class CommandHandler:
         if not os.path.isdir(dst):
             return {"ok": False, "error": f"Overlay '{name}' not found"}
 
-        current = self.boot.get_active_subvol()
-        if current == f"@overlay-{name}":
-            return {"ok": False, "error": "Cannot delete active boot overlay. Switch to another first."}
+        if name == RECOVERY_OVERLAY:
+            return {"ok": False, "error": "Recovery overlay cannot be deleted. It is the immutable safety net."}
+
+        if name == INIT_OVERLAY:
+            return {"ok": False, "error": "Init overlay cannot be deleted. Use 'immutable reset init' to restore it from recovery."}
+
+        running = self.get_running_subvol()
+        if running == f"@overlay-{name}":
+            return {"ok": False, "error": "Cannot delete the currently running overlay. Switch to another first and reboot."}
+
+        boot_subvol = self.boot.get_active_subvol()
+        boot_reverted = False
+        if boot_subvol == f"@overlay-{name}":
+            self._revert_boot_to_init()
+            boot_reverted = True
 
         self.btrfs.delete_subvol(dst)
-        return {"ok": True, "output": f"Deleted overlay '{name}'."}
+
+        output = f"Deleted overlay '{name}'."
+        if boot_reverted:
+            output += "\nBoot entry was set to this overlay — reverted to @overlay-init."
+        return {"ok": True, "output": output}
 
     def _cmd_reset(self, msg):
         name = msg.get("name")
@@ -319,6 +360,21 @@ class CommandHandler:
         dst = f"{POOL}/{OVERLAY_PREFIX}{name}"
         if not os.path.isdir(dst):
             return {"ok": False, "error": f"Overlay '{name}' not found"}
+
+        if name == RECOVERY_OVERLAY:
+            return {"ok": False, "error": "Cannot reset recovery directly. Use 'immutable reset-recovery' to recreate it from @base."}
+
+        running = self.get_running_subvol()
+        if running == f"@overlay-{name}":
+            return {"ok": False, "error": "Cannot reset the currently running overlay. Switch to another first and reboot."}
+
+        if name == INIT_OVERLAY:
+            src = f"{POOL}/{OVERLAY_PREFIX}{RECOVERY_OVERLAY}"
+            if not os.path.isdir(src):
+                return {"ok": False, "error": "Recovery overlay not found — cannot reset init."}
+            self.btrfs.delete_subvol(dst)
+            self.btrfs.snapshot(src, dst)
+            return {"ok": True, "output": f"Resetting init overlay from recovery...\nReset complete: {dst}"}
 
         active = self.boot.get_active_subvol()
         src = f"{POOL}/{active}" if active else f"{POOL}/{BASE_SUBVOL}"
@@ -362,7 +418,8 @@ class CommandHandler:
         if os.path.isdir(recovery):
             self.btrfs.delete_subvol(recovery)
         self.btrfs.snapshot(src, recovery)
-        return {"ok": True, "output": f"Recovery overlay created at {recovery}"}
+        self.btrfs.set_property(recovery, "ro", "true")
+        return {"ok": True, "output": f"Recovery overlay recreated from @base (read-only)\n{recovery}"}
 
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""

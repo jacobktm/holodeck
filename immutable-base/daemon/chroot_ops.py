@@ -116,6 +116,25 @@ class ChrootMount:
         except OSError as e:
             log.debug("Overlay /run after-mount inspection failed: %s", e)
 
+        # --- /boot/efi read-only bind mount ---
+        # Expose the real ESP so the chroot sees current kernels/boot entries,
+        # but block writes to protect the bootloader from accidental deletion.
+        if os.path.ismount("/boot/efi"):
+            _mkdir_p(f"{root}/boot/efi")
+            try:
+                subprocess.run(
+                    ["mount", "--bind", "/boot/efi", f"{root}/boot/efi"],
+                    check=True, capture_output=True,
+                )
+                mounts_done.append(f"{root}/boot/efi")
+                # Remount read-only on top of the bind
+                subprocess.run(
+                    ["mount", "-o", "remount,ro,bind", f"{root}/boot/efi"],
+                    check=True, capture_output=True,
+                )
+            except subprocess.CalledProcessError as e:
+                log.debug("Failed to bind-mount /boot/efi read-only: %s", e)
+
         # --- /tmp bind mount ---
         _mkdir_p(f"{root}/tmp")
         _bind("/tmp", f"{root}/tmp")

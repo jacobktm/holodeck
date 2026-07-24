@@ -82,13 +82,13 @@ for mnt in $(mount | grep "$TARGET_DEVICE" | awk '{print $3}' | sort -r); do
     umount "$mnt" 2>/dev/null || true
 done
 
-EFI_END=1025
+EFI_END=2049
 SWAP_MIB=$(( ${SWAP_SIZE%G} * 1024 ))
 SWAP_START="${EFI_END}MiB"
 SWAP_END="$(( EFI_END + SWAP_MIB ))MiB"
 
 parted -s "$TARGET_DEVICE" mklabel gpt
-parted -s "$TARGET_DEVICE" mkpart ESP fat32 1MiB 1025MiB
+parted -s "$TARGET_DEVICE" mkpart ESP fat32 1MiB 2049MiB
 parted -s "$TARGET_DEVICE" set 1 esp on
 parted -s "$TARGET_DEVICE" mkpart swap linux-swap "$SWAP_START" "$SWAP_END"
 parted -s "$TARGET_DEVICE" mkpart root btrfs "$SWAP_END" 100%
@@ -437,9 +437,10 @@ umount "$MOUNT_POINT/pool/@base/run" 2>/dev/null || true
 btrfs property set "$MOUNT_POINT/pool/@base" ro true
 echo "@base updated and locked"
 
-# Create recovery overlay (snapshot of @base, used as fallback for failed boots)
+# Create recovery overlay (snapshot of @base, read-only safety net)
 btrfs subvolume snapshot "$MOUNT_POINT/pool/@base" "$MOUNT_POINT/pool/@overlay-recovery"
-echo "Created recovery overlay"
+btrfs property set "$MOUNT_POINT/pool/@overlay-recovery" ro true
+echo "Created recovery overlay (read-only)"
 
 # ── Install immutable CLI ──
 
@@ -514,6 +515,7 @@ chroot "$MOUNT_POINT" systemctl enable immutable-healthcheck.service 2>/dev/null
 # Initialize boot counter
 mkdir -p "$MOUNT_POINT/pool/@data"
 echo "0" > "$MOUNT_POINT/pool/@data/boot-counter"
+echo "@overlay-init" > "$MOUNT_POINT/pool/@data/boot-last-overlay"
 
 echo "Installed boot recovery services"
 

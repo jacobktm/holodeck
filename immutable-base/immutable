@@ -288,6 +288,135 @@ def _relay_loop(sock, stdin_fd):
                     pass
 
 
+def _get_username() -> str:
+    """Read the configured username."""
+    try:
+        with open("/etc/immutable.conf") as f:
+            for line in f:
+                if line.startswith("USERNAME="):
+                    return line.split("=", 1)[1].strip()
+    except (FileNotFoundError, ValueError):
+        pass
+    import pwd as _pwd
+    for d in sorted(os.listdir("/home")):
+        if os.path.isdir(f"/home/{d}") and d != "root":
+            return d
+    return "USERNAME"
+
+
+# Items protected by @data bind-mounts — these survive overlay resets.
+PROTECTED_DIRS = ["Documents", "Downloads", "Pictures", "Videos", "Music"]
+PROTECTED_DOTFILES = [".bash_history", ".profile", ".bashrc", ".gitconfig"]
+
+
+def cmd_reset(name: str):
+    """Reset an overlay, with interactive home preservation for init."""
+    pool = os.environ.get("IMMUTABLE_POOL", "/pool")
+    overlay_prefix = "@overlay-"
+    overlay_path = f"{pool}/{overlay_prefix}{name}"
+    username = _get_username()
+    home_dir = f"{overlay_path}/home/{username}"
+
+    # Only offer preservation for overlays that have a real home directory
+    has_unprotected = False
+    unprotected_items = []
+
+    if os.path.isdir(home_dir):
+        try:
+            entries = sorted(os.listdir(home_dir))
+        except OSError:
+            entries = []
+
+        protected = set(PROTECTED_DIRS + PROTECTED_DOTFILES)
+        for entry in entries:
+            if entry not in protected:
+                unprotected_items.append(entry)
+                has_unprotected = True
+
+    if has_unprotected:
+        import shutil as _shutil
+        term_width = _shutil.get_terminal_size((80, 24)).columns
+
+        print(f"\nThe overlay '{name}' has files in /home/{username}/ that are NOT")
+        print("preserved by @data bind-mounts and will be lost on reset:\n")
+
+        # Build numbered entries with dir/ suffix
+        entries = []
+        for i, item in enumerate(unprotected_items, 1):
+            full_path = os.path.join(home_dir, item)
+            if os.path.isdir(full_path):
+                entries.append(f"{i}. {item}/")
+            else:
+                entries.append(f"{i}. {item}")
+
+        # Calculate column layout
+        max_len = max(len(e) for e in entries)
+        col_width = max_len + 2  # gap between columns
+        num_cols = max(1, (term_width - 2) // col_width)  # 2 for indent
+        rows = (len(entries) + num_cols - 1) // num_cols
+
+        for row in range(rows):
+            line = "  "
+            for col in range(num_cols):
+                idx = col * rows + row
+                if idx < len(entries):
+                    line += entries[idx].ljust(col_width)
+            print(line)
+
+        print(f"\n  P. Preserve all listed items")
+        print(f"  S. Skip preservation (lose everything not in @data)")
+        print()
+
+        choice = input("Select items to preserve (comma-separated numbers, P, or S): ").strip()
+
+        if choice.upper() == "S":
+            preserve = []
+        elif choice.upper() == "P":
+            preserve = list(unprotected_items)
+        elif not choice:
+            preserve = []
+        else:
+            preserve = []
+            for part in choice.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    idx = int(part) - 1
+                    if 0 <= idx < len(unprotected_items):
+                        preserve.append(unprotected_items[idx])
+
+        if preserve:
+            staging = f"{pool}/@data/.preserve-{name}"
+            os.makedirs(staging, exist_ok=True)
+            import shutil as _shutil
+            for item in preserve:
+                src = os.path.join(home_dir, item)
+                dst = os.path.join(staging, item)
+                if os.path.isdir(src):
+                    _shutil.copytree(src, dst)
+                else:
+                    _shutil.copy2(src, dst)
+            print(f"Preserved {len(preserve)} item(s) in {staging}")
+
+        print(f"\nResetting overlay '{name}'...")
+        cmd_simple({"cmd": "reset", "name": name})
+
+        if preserve:
+            new_home = f"{overlay_path}/home/{username}"
+            os.makedirs(new_home, exist_ok=True)
+            import shutil as _shutil
+            for item in preserve:
+                src = os.path.join(staging, item)
+                dst = os.path.join(new_home, item)
+                if os.path.isdir(src):
+                    _shutil.copytree(src, dst)
+                else:
+                    _shutil.copy2(src, dst)
+            _shutil.rmtree(staging)
+            print(f"Restored {len(preserve)} preserved item(s)")
+    else:
+        cmd_simple({"cmd": "reset", "name": name})
+
+
 def print_help():
     """Print usage information."""
     print(f"""immutable v{VERSION} -- Overlay management for immutable Pop!_OS
@@ -299,13 +428,13 @@ Usage:
   immutable list                List all overlays
   immutable list-names          List overlay names (one per line, for scripting)
   immutable switch <name>       Set overlay as boot default (needs reboot)
-  immutable reset <name>        Reset overlay to @base state
-  immutable delete <name>       Delete an overlay
+  immutable reset <name>        Reset overlay from source (init: from recovery, others: from active boot)
+  immutable delete <name>       Delete an overlay (not init or recovery)
   immutable status              Show system status
   immutable lock                Lock @base (read-only)
   immutable unlock              Unlock @base (writable)
-  immutable recovery            Switch to recovery overlay
-  immutable reset-recovery      Reset recovery overlay from @base
+  immutable recovery            Switch to recovery overlay (needs reboot)
+  immutable reset-recovery      Recreate recovery from @base (read-only)
   immutable update              Update CLI from @data
   immutable help                Show this help""")
 
@@ -359,7 +488,7 @@ def main():
         if len(sys.argv) < 3:
             print("Usage: immutable reset <name>", file=sys.stderr)
             sys.exit(1)
-        cmd_simple({"cmd": "reset", "name": sys.argv[2]})
+        cmd_reset(sys.argv[2])
     elif cmd == "switch":
         if len(sys.argv) < 3:
             print("Usage: immutable switch <name>", file=sys.stderr)
