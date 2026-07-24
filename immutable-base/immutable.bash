@@ -20,6 +20,13 @@ _immutable() {
 
     local subcommands="create shell run list list-names switch reset delete status lock unlock recovery reset-recovery update help"
 
+    # Completing the command name itself (e.g. immu<TAB>)
+    if [ "$COMP_CWORD" -eq 0 ]; then
+        COMPREPLY=($(compgen -W "immutable" -- "$cur"))
+        _immutable_fix_space
+        return
+    fi
+
     # First argument: subcommands
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
