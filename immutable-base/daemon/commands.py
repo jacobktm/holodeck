@@ -471,28 +471,27 @@ class CommandHandler:
         return {"ok": True, "output": "\n".join(lines)}
 
     def _cmd_update_initramfs(self, msg):
-        """Run update-initramfs in an overlay. Only copies to ESP if it's the boot overlay.
+        """Run update-initramfs in the current boot overlay and copy to ESP.
 
-        For non-boot overlays: regenerates the initramfs locally (no ESP update).
-        For the boot overlay: regenerates initramfs AND copies kernel/initrd to ESP.
-        This prevents a test overlay's modules from contaminating the boot ESP.
+        Only operates on the active boot overlay to prevent cross-overlay
+        module contamination. To update a different overlay, switch to it first.
         """
         import re as _re
         import shutil as _shutil
         import subprocess
 
-        name = msg.get("name", "init")
         version = msg.get("version")  # optional, e.g. "7.0.11-76070011-generic"
 
         self._ensure_pool()
-        subvol = f"@overlay-{name}"
-        root = f"{self.pool}/{subvol}"
-        if not os.path.isdir(root):
-            return {"ok": False, "error": f"Overlay not found: {subvol}"}
 
-        # Check if this is the current boot overlay
-        boot_overlay = self.boot.get_active_subvol()
-        is_boot_overlay = (boot_overlay == subvol)
+        # Only operate on the boot overlay
+        boot_subvol = self.boot.get_active_subvol()
+        if not boot_subvol:
+            return {"ok": False, "error": "No boot overlay configured"}
+
+        root = f"{self.pool}/{boot_subvol}"
+        if not os.path.isdir(root):
+            return {"ok": False, "error": f"Boot overlay not found: {boot_subvol}"}
 
         # Mount the chroot
         mount_ctx = self.chroot.mount(root)
@@ -527,45 +526,42 @@ class CommandHandler:
                 self.chroot.teardown(mount_ctx)
                 return {"ok": False, "error": f"update-initramfs failed:\n{result.stderr}"}
 
-            lines = [
-                f"update-initramfs completed for {version}",
-                f"Overlay: {subvol}",
-            ]
+            # Copy kernel and initrd to the ESP (bypassing the read-only bind)
+            esp_dir = "/boot/efi"
+            boot_entry = f"{esp_dir}/loader/entries/immutable.conf"
+            esp_kernel_dir = None
+            try:
+                entry_content = Path(boot_entry).read_text()
+                linux_match = _re.search(r"^linux\s+(\S+)", entry_content, _re.MULTILINE)
+                if linux_match:
+                    esp_kernel_dir = f"{esp_dir}/{Path(linux_match.group(1)).parent}"
+            except FileNotFoundError:
+                pass
 
-            # Only copy to ESP if this is the boot overlay
-            if is_boot_overlay:
-                esp_dir = "/boot/efi"
-                boot_entry = f"{esp_dir}/loader/entries/immutable.conf"
-                esp_kernel_dir = None
-                try:
-                    entry_content = Path(boot_entry).read_text()
-                    linux_match = _re.search(r"^linux\s+(\S+)", entry_content, _re.MULTILINE)
-                    if linux_match:
-                        esp_kernel_dir = f"{esp_dir}/{Path(linux_match.group(1)).parent}"
-                except FileNotFoundError:
-                    pass
+            if not esp_kernel_dir:
+                efi_base = f"{esp_dir}/EFI"
+                if os.path.isdir(efi_base):
+                    for d in os.listdir(efi_base):
+                        if d.startswith("Pop_OS-"):
+                            esp_kernel_dir = f"{efi_base}/{d}"
+                            break
 
-                if not esp_kernel_dir:
-                    efi_base = f"{esp_dir}/EFI"
-                    if os.path.isdir(efi_base):
-                        for d in os.listdir(efi_base):
-                            if d.startswith("Pop_OS-"):
-                                esp_kernel_dir = f"{efi_base}/{d}"
-                                break
+            if not esp_kernel_dir:
+                self.chroot.teardown(mount_ctx)
+                return {"ok": False, "error": "Cannot find ESP kernel directory"}
 
-                if esp_kernel_dir:
-                    os.makedirs(esp_kernel_dir, exist_ok=True)
-                    _shutil.copy2(kernel_path, f"{esp_kernel_dir}/vmlinuz.efi")
-                    _shutil.copy2(initrd_path, f"{esp_kernel_dir}/initrd.img")
-                    _shutil.copy2(f"{esp_kernel_dir}/vmlinuz.efi", f"{esp_kernel_dir}/vmlinuz-previous.efi")
-                    _shutil.copy2(f"{esp_kernel_dir}/initrd.img", f"{esp_kernel_dir}/initrd.img-previous")
-                    lines.append(f"ESP updated: {esp_kernel_dir}")
-                else:
-                    lines.append("WARNING: Could not find ESP kernel directory")
-            else:
-                lines.append(f"ESP not updated (not the boot overlay — boot overlay is {boot_overlay})")
+            # Copy files to ESP
+            os.makedirs(esp_kernel_dir, exist_ok=True)
+            _shutil.copy2(kernel_path, f"{esp_kernel_dir}/vmlinuz.efi")
+            _shutil.copy2(initrd_path, f"{esp_kernel_dir}/initrd.img")
+            _shutil.copy2(f"{esp_kernel_dir}/vmlinuz.efi", f"{esp_kernel_dir}/vmlinuz-previous.efi")
+            _shutil.copy2(f"{esp_kernel_dir}/initrd.img", f"{esp_kernel_dir}/initrd.img-previous")
 
-            return {"ok": True, "output": "\n".join(lines)}
+            return {"ok": True, "output": (
+                f"update-initramfs completed for {version}\n"
+                f"Overlay: {boot_subvol}\n"
+                f"ESP updated: {esp_kernel_dir}"
+            )}
 
         finally:
             self.chroot.teardown(mount_ctx)
