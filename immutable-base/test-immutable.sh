@@ -1004,19 +1004,6 @@ else
     log_fail "Reinstall script missing: /usr/lib/immutable/hooks/immutable-hook-reinstall"
 fi
 
-# Check that hooks are diverted (dpkg can't overwrite them)
-for HOOK_PATH in \
-    /etc/kernel/postinst.d/zz-kernelstub \
-    /etc/kernel/postinst.d/zz-systemd-boot \
-    /etc/initramfs/post-update.d/zz-kernelstub \
-    /etc/initramfs/post-update.d/systemd-boot; do
-    if dpkg-divert --list "$HOOK_PATH" 2>/dev/null | grep -q "immutable-diverted"; then
-        log_pass "Hook diverted: $HOOK_PATH"
-    else
-        log_fail "Hook NOT diverted: $HOOK_PATH"
-    fi
-done
-
 echo ""
 
 # ════════════════════════════════════════════

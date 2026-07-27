@@ -1,16 +1,39 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for initramfs post-update.
-# Inside an overlay chroot: skip silently (overlay kernels don't affect host boot).
+# In a chroot: unlock ESP, run kernelstub, re-lock ESP.
 # On the host: run kernelstub normally.
+#
+# ESP unlock requires cached sudo credentials. Pre-authorize with:
+#   sudo -v
+# or use 'immutable shell' which handles this automatically.
 
 # Detect chroot: compare root filesystem device/inode to /proc/1/root's
 ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
 REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
+
 if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
-    echo "immutable: skipping kernelstub (running in chroot)"
+    ESP="/boot/efi"
+
+    # Check if ESP is mounted
+    if ! mountpoint -q "$ESP" 2>/dev/null; then
+        exit 0
+    fi
+
+    # Try to unlock ESP (needs cached sudo — run 'sudo -v' first)
+    if sudo -n mount -o remount,rw,bind "$ESP" 2>/dev/null; then
+        KERNEL="/boot/vmlinuz-$1"
+        INITRD="$2"
+        kernelstub --verbose --preserve-live-mode || true
+        mount -o remount,ro,bind "$ESP" 2>/dev/null
+        exit 0
+    fi
+
+    # Can't unlock — skip kernelstub silently
+    # Run 'immutable update-initramfs' to update the ESP from the host
     exit 0
 fi
 
+# On the host: run kernelstub normally
 KERNEL="/boot/vmlinuz-$1"
 INITRD="$2"
 

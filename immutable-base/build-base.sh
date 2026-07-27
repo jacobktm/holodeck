@@ -246,7 +246,6 @@ install_base_packages() {
     configure_rootfs_repos
 
     # Install immutable-aware kernelstub hooks BEFORE packages.
-    # Divert stock hooks so dpkg can't overwrite ours during package install.
     echo "Installing immutable-aware kernelstub hooks..."
     HOOKS_SRC="$(dirname "$0")/hooks"
 
@@ -258,17 +257,16 @@ install_base_packages() {
         done
     done
 
-    # Divert stock hooks so kernelstub/systemd-boot packages can't overwrite ours
+    # Divert stock hooks so packages can't overwrite ours during installation
     for hook_path in \
         /etc/kernel/postinst.d/zz-kernelstub \
         /etc/kernel/postinst.d/zz-systemd-boot \
         /etc/initramfs/post-update.d/zz-kernelstub \
         /etc/initramfs/post-update.d/systemd-boot; do
-        chroot "$ROOTFS_DIR" dpkg-divert --divert "${hook_path}.immutable-diverted" \
-            --no-rename "$hook_path" 2>/dev/null || true
+        run_in_chroot "dpkg-divert --divert '${hook_path}.immutable-diverted' --no-rename '${hook_path}'" || true
     done
 
-    # Install our hooks (won't be overwritten — divert is active)
+    # Install our hooks to active locations
     install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
         "$ROOTFS_DIR/etc/kernel/postinst.d/zz-kernelstub"
     install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
@@ -282,7 +280,7 @@ install_base_packages() {
     install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
         "$ROOTFS_DIR/etc/dpkg/dpkg.cfg.d/99-immutable"
 
-    # Install dpkg hook — reinstalls our hooks after kernelstub/systemd-boot updates
+    # Install dpkg hook — reinstalls our hooks after EVERY dpkg invocation
     install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
         "$ROOTFS_DIR/etc/apt/apt.conf.d/99-immutable-hooks"
 
