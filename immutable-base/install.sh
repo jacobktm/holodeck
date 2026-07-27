@@ -555,11 +555,11 @@ echo "Installed immutable daemon"
 
 # ── Install systemd services for boot recovery ──
 
-cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/usr/local/bin/immutable-boot-counter.sh"
-chmod +x "$MOUNT_POINT/usr/local/bin/immutable-boot-counter.sh"
+cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
+chmod +x "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
 
-cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/usr/local/bin/immutable-healthcheck.sh"
-chmod +x "$MOUNT_POINT/usr/local/bin/immutable-healthcheck.sh"
+cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
+chmod +x "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
 
 cp "$(dirname "$0")/immutable-boot-counter.service" "$MOUNT_POINT/etc/systemd/system/immutable-boot-counter.service"
 cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/system/immutable-healthcheck.service"

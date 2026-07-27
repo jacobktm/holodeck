@@ -6,7 +6,7 @@ Before=immutable-healthcheck.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/immutable-boot-counter.sh
+ExecStart=/usr/lib/immutable/immutable-boot-counter.sh
 RemainAfterExit=yes
 
 [Install]
