@@ -1,0 +1,4 @@
+# Immutable Pop!_OS: always keep our modified conffiles
+# Prevents dpkg from prompting when kernelstub/systemd-boot packages
+# try to replace our chroot-aware hooks with stock versions.
+force-confold

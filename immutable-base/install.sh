@@ -273,6 +273,10 @@ install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
 install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
     "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
 
+# Install dpkg config: auto-keep our modified hooks (no prompts)
+install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
+    "$MOUNT_POINT/etc/dpkg/dpkg.cfg.d/99-immutable"
+
 # Install dpkg hook — reinstalls our hooks after kernelstub/systemd-boot updates
 install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
     "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
