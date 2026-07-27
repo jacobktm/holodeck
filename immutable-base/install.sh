@@ -65,6 +65,9 @@ fi
 if [ -z "$PASSWORD" ]; then
     read -rsp "Enter password for $USERNAME: " PASSWORD
     echo
+    read -rsp "Confirm password: " PASSWORD_CONFIRM
+    echo
+    [ "$PASSWORD" = "$PASSWORD_CONFIRM" ] || die "Passwords do not match"
 fi
 [ -n "$PASSWORD" ] || die "Password cannot be empty"
 
