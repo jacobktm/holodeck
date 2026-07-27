@@ -514,7 +514,7 @@ def main():
     elif cmd == "update":
         # Copy self to @data
         import shutil
-        data_path = "/pool/@data/immutable"
+        data_path = "/pool/@data/immutable/bin/immutable"
         try:
             shutil.copy2(sys.argv[0], data_path)
             os.chmod(data_path, 0o755)

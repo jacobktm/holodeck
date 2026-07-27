@@ -182,8 +182,8 @@ fi
 echo ""
 echo "=== Daemon Diagnostics ==="
 
-# Check daemon modules installed
-if [ -f /usr/lib/immutable/daemon.py ]; then
+# Check daemon modules installed (via @data bind mount)
+if [ -f /usr/lib/immutable/daemon/daemon.py ] || [ -f /usr/lib/immutable/daemon.py ]; then
     log_pass "Daemon modules installed at /usr/lib/immutable/"
 else
     log_fail "Daemon modules not found at /usr/lib/immutable/"
@@ -246,7 +246,17 @@ fi
 echo "  Testing daemon module imports..."
 IMPORT_ERR=$(python3 -c "
 import sys
-sys.path.insert(0, '/usr/lib/immutable')
+import os
+# Support both flat layout (install-daemon.sh) and daemon/ subdirectory (install.sh via @data)
+daemon_dir = '/usr/lib/immutable/daemon'
+flat_dir = '/usr/lib/immutable'
+if os.path.isdir(daemon_dir) and os.path.exists(os.path.join(daemon_dir, 'protocol.py')):
+    sys.path.insert(0, daemon_dir)
+elif os.path.isdir(flat_dir) and os.path.exists(os.path.join(flat_dir, 'protocol.py')):
+    sys.path.insert(0, flat_dir)
+else:
+    print('IMPORT ERROR: daemon modules not found')
+    sys.exit(0)
 try:
     from protocol import Message
     from btrfs_ops import BtrfsOps

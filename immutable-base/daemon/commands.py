@@ -394,7 +394,7 @@ class CommandHandler:
         # Sync current boot overlay's ESP to the real ESP before switching
         current = self.boot.get_active_subvol()
         if current:
-            current_root = f"{self.pool}/{current}"
+            current_root = f"{POOL}/{current}"
             if os.path.isdir(current_root):
                 self.chroot.sync_esp(current_root)
 
@@ -496,7 +496,7 @@ class CommandHandler:
         if not boot_subvol:
             return {"ok": False, "error": "No boot overlay configured"}
 
-        root = f"{self.pool}/{boot_subvol}"
+        root = f"{POOL}/{boot_subvol}"
         if not os.path.isdir(root):
             return {"ok": False, "error": f"Boot overlay not found: {boot_subvol}"}
 
@@ -508,7 +508,6 @@ class CommandHandler:
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
-                self.chroot.teardown(mount_ctx)
                 return {"ok": False, "error": f"update-initramfs failed:\n{result.stderr}"}
 
             # Find the latest kernel in the overlay's /boot to copy to ESP
@@ -517,7 +516,6 @@ class CommandHandler:
                 [f for f in os.listdir(boot_dir) if f.startswith("vmlinuz-") and not os.path.islink(os.path.join(boot_dir, f))],
             ) if os.path.isdir(boot_dir) else []
             if not kernels:
-                self.chroot.teardown(mount_ctx)
                 return {"ok": False, "error": f"No kernels found in {boot_dir}"}
 
             latest = kernels[-1]
@@ -546,7 +544,6 @@ class CommandHandler:
                             break
 
             if not esp_kernel_dir:
-                self.chroot.teardown(mount_ctx)
                 return {"ok": False, "error": "Cannot find ESP kernel directory in overlay"}
 
             # Copy kernel and initrd to the overlay's ESP copy
@@ -567,7 +564,7 @@ class CommandHandler:
             )}
 
         finally:
-            self.chroot.teardown(mount_ctx)
+            self.chroot.unmount(root, mount_ctx)
 
     def _exec_in_chroot(self, root, args, env, mount_ctx):
         """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""
