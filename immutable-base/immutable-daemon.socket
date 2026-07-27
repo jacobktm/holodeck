@@ -1,5 +1,7 @@
 [Unit]
 Description=Immutable overlay management daemon socket
+After=sysinit.target
+Requires=sysinit.target
 
 [Socket]
 ListenStream=/run/immutable/daemon.sock
