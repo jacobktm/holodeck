@@ -14,12 +14,19 @@ REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
 if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     ESP="/boot/efi"
 
-    # Check if ESP is mounted
     if ! mountpoint -q "$ESP" 2>/dev/null; then
         exit 0
     fi
 
-    # Try to unlock ESP (needs cached sudo — run 'sudo -v' first)
+    # Check if ESP is already writable (boot overlay case)
+    if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+        # Already writable — run kernelstub directly
+        KERNEL="/boot/vmlinuz-$1"
+        INITRD="$2"
+        exec kernelstub --verbose --preserve-live-mode
+    fi
+
+    # ESP is read-only — try to unlock (needs cached sudo)
     if sudo -n mount -o remount,rw,bind "$ESP" 2>/dev/null; then
         KERNEL="/boot/vmlinuz-$1"
         INITRD="$2"
@@ -29,7 +36,6 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     fi
 
     # Can't unlock — skip kernelstub silently
-    # Run 'immutable update-initramfs' to update the ESP from the host
     exit 0
 fi
 

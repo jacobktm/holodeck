@@ -390,6 +390,14 @@ class CommandHandler:
             return {"ok": False, "error": "Missing 'name' field"}
 
         self._ensure_pool()
+
+        # Sync current boot overlay's ESP to the real ESP before switching
+        current = self.boot.get_active_subvol()
+        if current:
+            current_root = f"{self.pool}/{current}"
+            if os.path.isdir(current_root):
+                self.chroot.sync_esp(current_root)
+
         dst = f"{POOL}/{OVERLAY_PREFIX}{name}"
         if not os.path.isdir(dst):
             return {"ok": False, "error": f"Overlay '{name}' not found"}
@@ -517,20 +525,20 @@ class CommandHandler:
             kernel_path = f"{boot_dir}/{latest}"
             initrd_path = f"{boot_dir}/initrd.img-{version}"
 
-            # Find ESP kernel directory from boot entry
-            esp_dir = "/boot/efi"
-            boot_entry = f"{esp_dir}/loader/entries/immutable.conf"
+            # Find ESP kernel directory inside the overlay's /boot/efi copy
+            overlay_esp = f"{root}/boot/efi"
             esp_kernel_dir = None
+            boot_entry = f"{overlay_esp}/loader/entries/immutable.conf"
             try:
                 entry_content = Path(boot_entry).read_text()
                 linux_match = _re.search(r"^linux\s+(\S+)", entry_content, _re.MULTILINE)
                 if linux_match:
-                    esp_kernel_dir = f"{esp_dir}/{Path(linux_match.group(1)).parent}"
+                    esp_kernel_dir = f"{overlay_esp}/{Path(linux_match.group(1)).parent}"
             except FileNotFoundError:
                 pass
 
             if not esp_kernel_dir:
-                efi_base = f"{esp_dir}/EFI"
+                efi_base = f"{overlay_esp}/EFI"
                 if os.path.isdir(efi_base):
                     for d in os.listdir(efi_base):
                         if d.startswith("Pop_OS-"):
@@ -539,19 +547,23 @@ class CommandHandler:
 
             if not esp_kernel_dir:
                 self.chroot.teardown(mount_ctx)
-                return {"ok": False, "error": "Cannot find ESP kernel directory"}
+                return {"ok": False, "error": "Cannot find ESP kernel directory in overlay"}
 
-            # Copy kernel and initrd to ESP (bypassing the read-only bind)
+            # Copy kernel and initrd to the overlay's ESP copy
             os.makedirs(esp_kernel_dir, exist_ok=True)
             _shutil.copy2(kernel_path, f"{esp_kernel_dir}/vmlinuz.efi")
             _shutil.copy2(initrd_path, f"{esp_kernel_dir}/initrd.img")
             _shutil.copy2(f"{esp_kernel_dir}/vmlinuz.efi", f"{esp_kernel_dir}/vmlinuz-previous.efi")
             _shutil.copy2(f"{esp_kernel_dir}/initrd.img", f"{esp_kernel_dir}/initrd.img-previous")
 
+            # Sync overlay's ESP copy to the real ESP
+            self.chroot.sync_esp(root)
+
             return {"ok": True, "output": (
                 f"update-initramfs completed for {version}\n"
                 f"Overlay: {boot_subvol}\n"
-                f"ESP updated: {esp_kernel_dir}"
+                f"ESP updated: {esp_kernel_dir}\n"
+                f"Synced to real ESP"
             )}
 
         finally:

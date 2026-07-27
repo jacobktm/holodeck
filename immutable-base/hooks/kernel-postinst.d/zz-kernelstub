@@ -18,7 +18,15 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
         exit 0
     fi
 
-    # Try to unlock ESP (needs cached sudo — run 'sudo -v' first)
+    # Check if ESP is already writable (boot overlay case)
+    if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+        # Already writable — run kernelstub directly
+        INITRD="/boot/initrd.img-$1"
+        KERNEL="$2"
+        exec kernelstub --verbose --preserve-live-mode
+    fi
+
+    # ESP is read-only — try to unlock (needs cached sudo)
     if sudo -n mount -o remount,rw,bind "$ESP" 2>/dev/null; then
         INITRD="/boot/initrd.img-$1"
         KERNEL="$2"

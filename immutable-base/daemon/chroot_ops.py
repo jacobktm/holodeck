@@ -141,24 +141,31 @@ class ChrootMount:
         except OSError as e:
             log.debug("Overlay /run after-mount inspection failed: %s", e)
 
-        # --- /boot/efi read-only bind mount ---
-        # Expose the real ESP so the chroot sees current kernels/boot entries,
-        # but block writes to protect the bootloader from accidental deletion.
+        # --- /boot/efi per-overlay mount ---
+        # Each overlay has its own ESP copy so kernel installs don't cross-contaminate.
+        # All overlays get writable access; the real ESP is protected (never mounted in chroot).
         if os.path.ismount("/boot/efi"):
-            _mkdir_p(f"{root}/boot/efi")
+            overlay_esp = f"{root}/boot/efi"
+            _mkdir_p(overlay_esp)
+
+            # If overlay has no ESP copy yet, seed from the real ESP
+            if not os.listdir(overlay_esp):
+                try:
+                    subprocess.run(
+                        ["cp", "-a", "/boot/efi/.", overlay_esp],
+                        check=True, capture_output=True, timeout=30,
+                    )
+                except subprocess.CalledProcessError as e:
+                    log.debug("Failed to seed overlay ESP: %s", e)
+
             try:
                 subprocess.run(
-                    ["mount", "--bind", "/boot/efi", f"{root}/boot/efi"],
+                    ["mount", "--bind", overlay_esp, f"{root}/boot/efi"],
                     check=True, capture_output=True,
                 )
                 mounts_done.append(f"{root}/boot/efi")
-                # Remount read-only on top of the bind
-                subprocess.run(
-                    ["mount", "-o", "remount,ro,bind", f"{root}/boot/efi"],
-                    check=True, capture_output=True,
-                )
             except subprocess.CalledProcessError as e:
-                log.debug("Failed to bind-mount /boot/efi read-only: %s", e)
+                log.debug("Failed to bind-mount overlay ESP: %s", e)
 
         # --- /tmp bind mount ---
         _mkdir_p(f"{root}/tmp")
@@ -227,6 +234,23 @@ class ChrootMount:
                         )
                     except Exception:
                         pass
+
+    def sync_esp(self, overlay_root: str):
+        """Sync an overlay's /boot/efi copy to the real ESP."""
+        overlay_esp = f"{overlay_root}/boot/efi"
+        if not os.path.isdir(overlay_esp) or not os.listdir(overlay_esp):
+            return
+        real_esp = "/boot/efi"
+        if not os.path.ismount(real_esp):
+            return
+        try:
+            # rsync from overlay ESP to real ESP (delete files not in overlay)
+            subprocess.run(
+                ["rsync", "-a", "--delete", f"{overlay_esp}/", f"{real_esp}/"],
+                check=True, capture_output=True, timeout=30,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            log.warning("Failed to sync overlay ESP to real ESP: %s", e)
 
     def _get_username(self) -> str:
         """Read the configured username."""
