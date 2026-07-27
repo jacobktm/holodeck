@@ -267,16 +267,32 @@ chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y
 # boot=casper and live-media-path options. Replace with immutable-aware hooks.
 echo "Installing immutable-aware kernelstub hooks..."
 HOOKS_SRC="$(dirname "$0")/hooks"
-# Kernel postinst hooks
+
+# Install hooks to protected source directory (for dpkg-triggered reinstall)
+for dir in kernel-postinst.d initramfs-post-update.d; do
+    for hook in "$HOOKS_SRC/$dir"/*; do
+        [ -f "$hook" ] || continue
+        install -Dm755 "$hook" "$MOUNT_POINT/usr/lib/immutable/hooks/$dir/$(basename "$hook")"
+    done
+done
+
+# Install hooks to active locations (override stock hooks)
 install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
     "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
 install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
     "$MOUNT_POINT/etc/kernel/postinst.d/zz-systemd-boot"
-# Initramfs post-update hooks
 install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
     "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
 install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
     "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
+
+# Install dpkg hook — reinstalls our hooks after kernelstub/systemd-boot updates
+install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
+    "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
+
+# Install reinstall script to protected location
+install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
+    "$MOUNT_POINT/usr/lib/immutable/hooks/immutable-hook-reinstall"
 
 # ── fstab ──
 

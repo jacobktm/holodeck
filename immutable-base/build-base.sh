@@ -270,6 +270,16 @@ install_base_packages() {
     # Install immutable-aware kernelstub hooks (replaces stock hooks from packages)
     echo "Installing immutable-aware kernelstub hooks..."
     HOOKS_SRC="$(dirname "$0")/hooks"
+
+    # Install hooks to protected source directory (for dpkg-triggered reinstall)
+    for dir in kernel-postinst.d initramfs-post-update.d; do
+        for hook in "$HOOKS_SRC/$dir"/*; do
+            [ -f "$hook" ] || continue
+            install -Dm755 "$hook" "$ROOTFS_DIR/usr/lib/immutable/hooks/$dir/$(basename "$hook")"
+        done
+    done
+
+    # Install hooks to active locations (override stock hooks)
     install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
         "$ROOTFS_DIR/etc/kernel/postinst.d/zz-kernelstub"
     install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
@@ -278,6 +288,14 @@ install_base_packages() {
         "$ROOTFS_DIR/etc/initramfs/post-update.d/zz-kernelstub"
     install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
         "$ROOTFS_DIR/etc/initramfs/post-update.d/systemd-boot"
+
+    # Install dpkg hook — reinstalls our hooks after kernelstub/systemd-boot updates
+    install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
+        "$ROOTFS_DIR/etc/apt/apt.conf.d/99-immutable-hooks"
+
+    # Install reinstall script to protected location
+    install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
+        "$ROOTFS_DIR/usr/lib/immutable/hooks/immutable-hook-reinstall"
 
     # Remove temporary files
     rm -rf "$ROOTFS_DIR"/{tmp/*,var/tmp/*,var/cache/apt/archives/*.deb}

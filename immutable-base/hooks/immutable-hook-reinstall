@@ -1,0 +1,19 @@
+#!/bin/bash
+# Reinstall immutable-aware kernelstub hooks after package updates.
+# Triggered by dpkg whenever kernelstub or systemd-boot is installed/updated.
+# Stock hooks are replaced by our wrappers that detect chroot and skip.
+
+set -euo pipefail
+
+HOOKS_SRC="/usr/lib/immutable/hooks"
+[ -d "$HOOKS_SRC" ] || exit 0
+
+for dir in kernel-postinst.d initramfs-post-update.d; do
+    [ -d "$HOOKS_SRC/$dir" ] || continue
+    for hook in "$HOOKS_SRC/$dir"/*; do
+        [ -f "$hook" ] || continue
+        name="$(basename "$hook")"
+        target="/etc/$dir/$name"
+        install -Dm755 "$hook" "$target"
+    done
+done

@@ -1,0 +1,3 @@
+// Reinstall immutable-aware kernelstub hooks after package updates.
+// Runs after every dpkg invocation — lightweight (copies 4 small shell scripts).
+DPkg::Post-Invoke { "if [ -x /usr/lib/immutable/hooks/immutable-hook-reinstall ]; then /usr/lib/immutable/hooks/immutable-hook-reinstall; fi"; };

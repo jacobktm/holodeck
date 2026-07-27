@@ -976,6 +976,34 @@ for HOOK_PATH in \
     fi
 done
 
+# Check that hooks exist in protected source directory
+for HOOK_DIR in kernel-postinst.d initramfs-post-update.d; do
+    if [ -d "/usr/lib/immutable/hooks/$HOOK_DIR" ]; then
+        COUNT=$(ls -1 "/usr/lib/immutable/hooks/$HOOK_DIR" 2>/dev/null | wc -l)
+        if [ "$COUNT" -gt 0 ]; then
+            log_pass "Protected source hooks: /usr/lib/immutable/hooks/$HOOK_DIR ($COUNT hooks)"
+        else
+            log_fail "Protected source directory empty: /usr/lib/immutable/hooks/$HOOK_DIR"
+        fi
+    else
+        log_fail "Protected source directory missing: /usr/lib/immutable/hooks/$HOOK_DIR"
+    fi
+done
+
+# Check that dpkg hook is installed
+if [ -f "/etc/apt/apt.conf.d/99-immutable-hooks" ]; then
+    log_pass "dpkg hook installed: /etc/apt/apt.conf.d/99-immutable-hooks"
+else
+    log_fail "dpkg hook missing: /etc/apt/apt.conf.d/99-immutable-hooks"
+fi
+
+# Check that reinstall script is installed
+if [ -x "/usr/lib/immutable/hooks/immutable-hook-reinstall" ]; then
+    log_pass "Reinstall script installed: /usr/lib/immutable/hooks/immutable-hook-reinstall"
+else
+    log_fail "Reinstall script missing: /usr/lib/immutable/hooks/immutable-hook-reinstall"
+fi
+
 echo ""
 
 # ════════════════════════════════════════════

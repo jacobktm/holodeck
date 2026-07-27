@@ -49,15 +49,34 @@ echo "  Enabled immutable-daemon.socket"
 echo "Installing immutable-aware kernelstub hooks..."
 HOOKS_SRC="$SCRIPT_DIR/hooks"
 if [ -d "$HOOKS_SRC" ]; then
+    # Install hooks to protected source directory (for dpkg-triggered reinstall)
     for dir in kernel-postinst.d initramfs-post-update.d; do
         if [ -d "$HOOKS_SRC/$dir" ]; then
             for hook in "$HOOKS_SRC/$dir"/*; do
                 [ -f "$hook" ] || continue
-                name="$(basename "$hook")"
-                install -Dm755 "$hook" "/etc/$dir/$name"
+                install -Dm755 "$hook" "/usr/lib/immutable/hooks/$dir/$(basename "$hook")"
             done
         fi
     done
+
+    # Install hooks to active locations (override stock hooks)
+    for dir in kernel-postinst.d initramfs-post-update.d; do
+        if [ -d "$HOOKS_SRC/$dir" ]; then
+            for hook in "$HOOKS_SRC/$dir"/*; do
+                [ -f "$hook" ] || continue
+                install -Dm755 "$hook" "/etc/$dir/$(basename "$hook")"
+            done
+        fi
+    done
+
+    # Install dpkg hook — reinstalls our hooks after kernelstub/systemd-boot updates
+    install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
+        "/etc/apt/apt.conf.d/99-immutable-hooks"
+
+    # Install reinstall script to protected location
+    install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
+        "/usr/lib/immutable/hooks/immutable-hook-reinstall"
+
     echo "  Installed kernelstub hooks"
 fi
 
