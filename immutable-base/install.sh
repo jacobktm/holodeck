@@ -421,13 +421,24 @@ mkdir -p "$MOUNT_POINT/pool/@data/immutable/bin"
 cp "$(dirname "$0")/immutable" "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
 chmod +x "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
 
+# Also install directly to @base as baseline (bind mount from @data overrides at boot)
+cp "$(dirname "$0")/immutable" "$MOUNT_POINT/usr/local/bin/immutable"
+chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
+
 # Bash completions in @data
 mkdir -p "$MOUNT_POINT/pool/@data/immutable/bash-completion"
 cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/pool/@data/immutable/bash-completion/immutable"
 
+# Also install directly to @base
+cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/usr/share/bash-completion/completions/immutable"
+
 # Manpage in @data
 mkdir -p "$MOUNT_POINT/pool/@data/immutable/man"
 gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/pool/@data/immutable/man/immutable.1.gz"
+
+# Also install directly to @base
+mkdir -p "$MOUNT_POINT/usr/share/man/man1"
+gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/usr/share/man/man1/immutable.1.gz"
 
 # ── Install immutable daemon to @data (shared across all overlays) ──
 
@@ -482,9 +493,9 @@ ConditionPathExists=/pool/@data/immutable
 [Service]
 Type=oneshot
 ExecStart=/bin/mount --bind /pool/@data/immutable /usr/lib/immutable
-ExecStart=/bin/mount --bind /pool/@data/immutable/bin/immutable /usr/local/bin/immutable
-ExecStart=/bin/mount --bind /pool/@data/immutable/bash-completion/immutable /usr/share/bash-completion/completions/immutable
-ExecStart=/bin/mount --bind /pool/@data/immutable/man/immutable.1.gz /usr/share/man/man1/immutable.1.gz
+ExecStart=-/bin/mount --bind /pool/@data/immutable/bin/immutable /usr/local/bin/immutable
+ExecStart=-/bin/mount --bind /pool/@data/immutable/bash-completion/immutable /usr/share/bash-completion/completions/immutable
+ExecStart=-/bin/mount --bind /pool/@data/immutable/man/immutable.1.gz /usr/share/man/man1/immutable.1.gz
 RemainAfterExit=yes
 
 [Install]
