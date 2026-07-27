@@ -505,7 +505,6 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
-chroot "$MOUNT_POINT" systemctl enable immutable-data-mount.service 2>/dev/null || true
 
 # ── Daemon and system services ──
 
@@ -517,8 +516,6 @@ cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
 
 cp "$(dirname "$0")/tmpfiles-immutable.conf" "$MOUNT_POINT/etc/tmpfiles.d/immutable.conf"
 mkdir -p "$MOUNT_POINT/run/immutable"
-
-chroot "$MOUNT_POINT" systemctl enable immutable-daemon.socket 2>/dev/null || true
 
 # Fix devpts ptmx permissions
 cat > "$MOUNT_POINT/etc/systemd/system/fix-devpts.service" <<'UNIT'
@@ -535,13 +532,26 @@ RemainAfterExit=yes
 [Install]
 WantedBy=sysinit.target
 UNIT
-chroot "$MOUNT_POINT" systemctl enable fix-devpts.service 2>/dev/null || true
 
 cp "$(dirname "$0")/immutable-boot-counter.service" "$MOUNT_POINT/etc/systemd/system/"
 cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/system/"
 
-chroot "$MOUNT_POINT" systemctl enable immutable-boot-counter.service 2>/dev/null || true
-chroot "$MOUNT_POINT" systemctl enable immutable-healthcheck.service 2>/dev/null || true
+# ── Enable systemd units (manual symlinks — systemctl enable fails in chroot) ──
+
+mkdir -p "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$MOUNT_POINT/etc/systemd/system/sockets.target.wants"
+mkdir -p "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants"
+
+ln -sf /etc/systemd/system/immutable-data-mount.service \
+    "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/immutable-data-mount.service"
+ln -sf /etc/systemd/system/immutable-daemon.socket \
+    "$MOUNT_POINT/etc/systemd/system/sockets.target.wants/immutable-daemon.socket"
+ln -sf /etc/systemd/system/fix-devpts.service \
+    "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants/fix-devpts.service"
+ln -sf /etc/systemd/system/immutable-boot-counter.service \
+    "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/immutable-boot-counter.service"
+ln -sf /etc/systemd/system/immutable-healthcheck.service \
+    "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/immutable-healthcheck.service"
 
 echo "Installed immutable daemon and services"
 
