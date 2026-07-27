@@ -486,16 +486,17 @@ chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
 cat > "$MOUNT_POINT/etc/systemd/system/immutable-data-mount.service" <<'UNIT'
 [Unit]
 Description=Bind-mount immutable data from @data
-After=local-fs.target
+After=local-fs.target systemd-remount-fs.service
 Before=immutable-daemon.socket immutable-boot-counter.service immutable-healthcheck.service
+RequiresMountsFor=/pool
 ConditionPathExists=/pool/@data/immutable
 
 [Service]
 Type=oneshot
 ExecStart=/bin/mount --bind /pool/@data/immutable /usr/lib/immutable
-ExecStart=/bin/sh -c 'touch "$1" && exec /bin/mount --bind /pool/@data/immutable/bin/immutable "$1"' _ /usr/local/bin/immutable
-ExecStart=/bin/sh -c 'mkdir -p "$(dirname "$1")" && touch "$1" && exec /bin/mount --bind /pool/@data/immutable/bash-completion/immutable "$1"' _ /usr/share/bash-completion/completions/immutable
-ExecStart=/bin/sh -c 'mkdir -p "$(dirname "$1")" && touch "$1" && exec /bin/mount --bind /pool/@data/immutable/man/immutable.1.gz "$1"' _ /usr/share/man/man1/immutable.1.gz
+ExecStart=/bin/mount --bind /pool/@data/immutable/bin/immutable /usr/local/bin/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/bash-completion/immutable /usr/share/bash-completion/completions/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/man/immutable.1.gz /usr/share/man/man1/immutable.1.gz
 RemainAfterExit=yes
 
 [Install]
