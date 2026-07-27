@@ -246,7 +246,7 @@ install_base_packages() {
     configure_rootfs_repos
 
     # Install immutable-aware kernelstub hooks BEFORE packages.
-    # This prevents stock kernelstub from failing in the chroot (no block device).
+    # Divert stock hooks so dpkg can't overwrite ours during package install.
     echo "Installing immutable-aware kernelstub hooks..."
     HOOKS_SRC="$(dirname "$0")/hooks"
 
@@ -258,7 +258,17 @@ install_base_packages() {
         done
     done
 
-    # Install hooks to active locations (override stock hooks)
+    # Divert stock hooks so kernelstub/systemd-boot packages can't overwrite ours
+    for hook_path in \
+        /etc/kernel/postinst.d/zz-kernelstub \
+        /etc/kernel/postinst.d/zz-systemd-boot \
+        /etc/initramfs/post-update.d/zz-kernelstub \
+        /etc/initramfs/post-update.d/systemd-boot; do
+        chroot "$ROOTFS_DIR" dpkg-divert --divert "${hook_path}.immutable-diverted" \
+            --no-rename "$hook_path" 2>/dev/null || true
+    done
+
+    # Install our hooks (won't be overwritten — divert is active)
     install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
         "$ROOTFS_DIR/etc/kernel/postinst.d/zz-kernelstub"
     install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \

@@ -263,7 +263,17 @@ for dir in kernel-postinst.d initramfs-post-update.d; do
     done
 done
 
-# Install hooks to active locations (override stock hooks)
+# Divert stock hooks so kernelstub/systemd-boot packages can't overwrite ours
+for hook_path in \
+    /etc/kernel/postinst.d/zz-kernelstub \
+    /etc/kernel/postinst.d/zz-systemd-boot \
+    /etc/initramfs/post-update.d/zz-kernelstub \
+    /etc/initramfs/post-update.d/systemd-boot; do
+    chroot "$MOUNT_POINT" dpkg-divert --divert "${hook_path}.immutable-diverted" \
+        --no-rename "$hook_path" 2>/dev/null || true
+done
+
+# Install our hooks (won't be overwritten — divert is active)
 install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
     "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
 install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
