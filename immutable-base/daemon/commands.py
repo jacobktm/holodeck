@@ -473,18 +473,17 @@ class CommandHandler:
     def _cmd_update_initramfs(self, msg):
         """Run update-initramfs in the current boot overlay and copy to ESP.
 
-        Only operates on the active boot overlay to prevent cross-overlay
-        module contamination. To update a different overlay, switch to it first.
+        Only operates on the active boot overlay. All arguments are passed
+        through to update-initramfs (e.g. -k6.8.0-40-generic, -c, -u).
         """
         import re as _re
         import shutil as _shutil
         import subprocess
 
-        version = msg.get("version")  # optional, e.g. "7.0.11-76070011-generic"
+        args = msg.get("args", [])
 
         self._ensure_pool()
 
-        # Only operate on the boot overlay
         boot_subvol = self.boot.get_active_subvol()
         if not boot_subvol:
             return {"ok": False, "error": "No boot overlay configured"}
@@ -493,40 +492,32 @@ class CommandHandler:
         if not os.path.isdir(root):
             return {"ok": False, "error": f"Boot overlay not found: {boot_subvol}"}
 
-        # Mount the chroot
         mount_ctx = self.chroot.mount(root)
         try:
-            # Find the kernel version to update
-            boot_dir = f"{root}/boot"
-            if version:
-                kernel_path = f"{boot_dir}/vmlinuz-{version}"
-                initrd_path = f"{boot_dir}/initrd.img-{version}"
-                if not os.path.isfile(kernel_path):
-                    self.chroot.teardown(mount_ctx)
-                    return {"ok": False, "error": f"Kernel not found: {kernel_path}"}
-            else:
-                # Auto-detect: use the latest installed kernel in the overlay
-                kernels = sorted(
-                    [f for f in os.listdir(boot_dir) if f.startswith("vmlinuz-") and not os.path.islink(os.path.join(boot_dir, f))],
-                ) if os.path.isdir(boot_dir) else []
-                if not kernels:
-                    self.chroot.teardown(mount_ctx)
-                    return {"ok": False, "error": f"No kernels found in {boot_dir}"}
-                latest = kernels[-1]
-                version = latest.removeprefix("vmlinuz-")
-                kernel_path = f"{boot_dir}/{latest}"
-                initrd_path = f"{boot_dir}/initrd.img-{version}"
-
-            # Run update-initramfs inside the chroot as root
+            # Run update-initramfs inside the chroot with passthrough args
             result = subprocess.run(
-                ["chroot", root, "/usr/sbin/update-initramfs", "-u", "-k", version],
+                ["chroot", root, "/usr/sbin/update-initramfs"] + args,
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
                 self.chroot.teardown(mount_ctx)
                 return {"ok": False, "error": f"update-initramfs failed:\n{result.stderr}"}
 
-            # Copy kernel and initrd to the ESP (bypassing the read-only bind)
+            # Find the latest kernel in the overlay's /boot to copy to ESP
+            boot_dir = f"{root}/boot"
+            kernels = sorted(
+                [f for f in os.listdir(boot_dir) if f.startswith("vmlinuz-") and not os.path.islink(os.path.join(boot_dir, f))],
+            ) if os.path.isdir(boot_dir) else []
+            if not kernels:
+                self.chroot.teardown(mount_ctx)
+                return {"ok": False, "error": f"No kernels found in {boot_dir}"}
+
+            latest = kernels[-1]
+            version = latest.removeprefix("vmlinuz-")
+            kernel_path = f"{boot_dir}/{latest}"
+            initrd_path = f"{boot_dir}/initrd.img-{version}"
+
+            # Find ESP kernel directory from boot entry
             esp_dir = "/boot/efi"
             boot_entry = f"{esp_dir}/loader/entries/immutable.conf"
             esp_kernel_dir = None
@@ -550,7 +541,7 @@ class CommandHandler:
                 self.chroot.teardown(mount_ctx)
                 return {"ok": False, "error": "Cannot find ESP kernel directory"}
 
-            # Copy files to ESP
+            # Copy kernel and initrd to ESP (bypassing the read-only bind)
             os.makedirs(esp_kernel_dir, exist_ok=True)
             _shutil.copy2(kernel_path, f"{esp_kernel_dir}/vmlinuz.efi")
             _shutil.copy2(initrd_path, f"{esp_kernel_dir}/initrd.img")

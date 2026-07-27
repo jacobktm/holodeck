@@ -104,16 +104,15 @@ Protected entries
 .RI ( immutable.conf ", " recovery.conf ", " previous.conf )
 are never removed.
 .TP
-.BI update-initramfs [" --version " version]
+.BI update-initramfs " [args]"
 Run
 .BR update-initramfs (8)
 in the current boot overlay and copy the kernel and initrd
 to the ESP.
+All arguments are passed through to update-initramfs
+(e.g. .
+.BR \-u ", " \-k6.8.0\-40\-generic ", " \-c ).
 Only operates on the active boot overlay.
-The
-.B --version
-flag targets a specific kernel version; otherwise the
-latest installed kernel is used.
 .TP
 .B update
 Copy the

@@ -436,8 +436,8 @@ Usage:
   immutable recovery            Switch to recovery overlay (needs reboot)
   immutable reset-recovery      Recreate recovery from @base (read-only)
   immutable clean-boot          Remove stale boot entries from the ESP
-  immutable update-initramfs [--version <ver>]
-                                Update initramfs in boot overlay and copy to ESP
+  immutable update-initramfs [args]   Run update-initramfs in boot overlay and update ESP
+                                     (all arguments passed to update-initramfs)
   immutable update              Update CLI from @data
   immutable help                Show this help""")
 
@@ -468,15 +468,7 @@ def main():
     elif cmd == "clean-boot":
         cmd_simple({"cmd": "clean-boot"})
     elif cmd == "update-initramfs":
-        msg = {"cmd": "update-initramfs"}
-        if "--version" in sys.argv:
-            idx = sys.argv.index("--version")
-            if idx + 1 < len(sys.argv):
-                msg["version"] = sys.argv[idx + 1]
-            else:
-                print("Usage: immutable update-initramfs [--version <ver>]", file=sys.stderr)
-                sys.exit(1)
-        cmd_simple(msg)
+        cmd_simple({"cmd": "update-initramfs", "args": sys.argv[2:]})
     elif cmd == "create":
         if len(sys.argv) < 3:
             print("Usage: immutable create <name> [--from <source>]", file=sys.stderr)
