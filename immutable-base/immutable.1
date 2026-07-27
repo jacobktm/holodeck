@@ -104,6 +104,16 @@ Protected entries
 .RI ( immutable.conf ", " recovery.conf ", " previous.conf )
 are never removed.
 .TP
+.BI update-initramfs " overlay" [" --version " version]
+Run
+.BR update-initramfs (8)
+inside the specified overlay, then copy the kernel and
+initrd to the ESP.
+The
+.B --version
+flag targets a specific kernel version; otherwise the
+latest installed kernel is used.
+.TP
 .B update
 Copy the
 .B immutable

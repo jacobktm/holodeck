@@ -78,6 +78,7 @@ immutable delete cosmic-files-v1
 | `immutable recovery` | Switch to recovery overlay (needs reboot) |
 | `immutable reset-recovery` | Recreate recovery from @base (read-only) |
 | `immutable clean-boot` | Remove stale boot entries from the ESP |
+| `immutable update-initramfs <overlay>` | Regenerate initramfs and update ESP |
 
 ## Testing Workflow
 
