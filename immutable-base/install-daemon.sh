@@ -19,7 +19,7 @@ if id USERNAME&>/dev/null; then
     echo "  Added USERNAMEto 'immutable' group"
 fi
 
-# Install daemon modules
+# Install daemon modules to /usr/lib/immutable (direct install path for host)
 mkdir -p /usr/lib/immutable
 cp -r "$SCRIPT_DIR/daemon/"*.py /usr/lib/immutable/
 touch /usr/lib/immutable/__init__.py
@@ -30,8 +30,29 @@ cp "$SCRIPT_DIR/immutable" /usr/local/bin/immutable
 chmod +x /usr/local/bin/immutable
 echo "  Installed CLI to /usr/local/bin/immutable"
 
-# Install systemd units
-cp "$SCRIPT_DIR/immutable-daemon.service" /etc/systemd/system/
+# Install systemd units (with paths for direct host install)
+cat > /etc/systemd/system/immutable-daemon.service <<'UNIT'
+[Unit]
+Description=Immutable overlay management daemon
+After=local-fs.target
+Requires=local-fs.target
+RefuseManualStart=yes
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/lib/immutable/daemon.py
+WorkingDirectory=/usr/lib/immutable
+User=root
+Group=root
+
+LimitNOFILE=65536
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 cp "$SCRIPT_DIR/immutable-daemon.socket" /etc/systemd/system/
 cp "$SCRIPT_DIR/tmpfiles-immutable.conf" /etc/tmpfiles.d/immutable.conf
 echo "  Installed systemd units"

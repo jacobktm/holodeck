@@ -120,7 +120,7 @@ mount "$PART_ROOT" "$MOUNT_POINT"
 
 btrfs subvolume create "$MOUNT_POINT/@data"
 btrfs subvolume create "$MOUNT_POINT/@snapshots"
-btrfs subvolume create "$MOUNT_POINT/@overlay-init"
+btrfs subvolume create "$MOUNT_POINT/@base"
 
 # Create @data user directories and default dotfile stubs
 for dir in Documents Downloads Pictures Videos Music; do
@@ -132,9 +132,9 @@ done
 
 umount "$MOUNT_POINT"
 
-# ── Extract rootfs ──
+# ── Extract rootfs into @base ──
 
-mount -o subvol=@overlay-init "$PART_ROOT" "$MOUNT_POINT"
+mount -o subvol=@base "$PART_ROOT" "$MOUNT_POINT"
 
 echo "Extracting rootfs..."
 zstd -d "$ROOTFS_TAR" --stdout | tar -C "$MOUNT_POINT" -xf -
@@ -247,52 +247,6 @@ if lspci 2>/dev/null | grep -qi nvidia; then
     HW_PACKAGES="$HW_PACKAGES system76-driver-nvidia"
     NVIDIA_BOOT_OPTS="nvidia-drm.modeset=1"
 fi
-
-# ── Install immutable-aware kernelstub hooks BEFORE packages ──
-
-# Install immutable-aware kernelstub hooks BEFORE packages.
-echo "Installing immutable-aware kernelstub hooks..."
-HOOKS_SRC="$(dirname "$0")/hooks"
-
-# Install hooks to protected source directory (for dpkg-triggered reinstall)
-for dir in kernel-postinst.d initramfs-post-update.d; do
-    for hook in "$HOOKS_SRC/$dir"/*; do
-        [ -f "$hook" ] || continue
-        install -Dm755 "$hook" "$MOUNT_POINT/usr/lib/immutable/hooks/$dir/$(basename "$hook")"
-    done
-done
-
-# Divert stock hooks so packages can't overwrite ours during installation
-for hook_path in \
-    /etc/kernel/postinst.d/zz-kernelstub \
-    /etc/kernel/postinst.d/zz-systemd-boot \
-    /etc/initramfs/post-update.d/zz-kernelstub \
-    /etc/initramfs/post-update.d/systemd-boot; do
-    chroot "$MOUNT_POINT" /bin/bash -c "dpkg-divert --divert '${hook_path}.immutable-diverted' --no-rename '${hook_path}'" || true
-done
-
-# Install our hooks to active locations
-install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
-    "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
-install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
-    "$MOUNT_POINT/etc/kernel/postinst.d/zz-systemd-boot"
-install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
-    "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
-install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
-    "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
-
-# Install dpkg config: auto-keep our modified hooks (no prompts)
-install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
-    "$MOUNT_POINT/etc/dpkg/dpkg.cfg.d/99-immutable"
-
-# Install dpkg hook — reinstalls our hooks after EVERY dpkg invocation
-# This ensures our hooks survive package upgrades that overwrite them
-install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
-    "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
-
-# Install reinstall script to protected location
-install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
-    "$MOUNT_POINT/usr/lib/immutable/hooks/immutable-hook-reinstall"
 
 # ── Install packages ──
 
@@ -456,87 +410,70 @@ fi
 echo "Boot entries:"
 ls -la "$MOUNT_POINT/boot/efi/loader/entries/" 2>/dev/null || true
 
-# ── Unmount chroot ──
+# ── Install immutable-aware hooks into @base ──
 
-umount -R "$MOUNT_POINT/dev" 2>/dev/null || true
-umount -R "$MOUNT_POINT/proc" 2>/dev/null || true
-umount -R "$MOUNT_POINT/sys" 2>/dev/null || true
-umount "$MOUNT_POINT/run" 2>/dev/null || true
+HOOKS_SRC="$(dirname "$0")/hooks"
 
-# ── Set up immutable base ──
+for dir in kernel-postinst.d initramfs-post-update.d; do
+    for hook in "$HOOKS_SRC/$dir"/*; do
+        [ -f "$hook" ] || continue
+        install -Dm755 "$hook" "$MOUNT_POINT/usr/lib/immutable/hooks/$dir/$(basename "$hook")"
+    done
+done
+
+install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
+    "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
+install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
+    "$MOUNT_POINT/etc/kernel/postinst.d/zz-systemd-boot"
+install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
+    "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
+install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
+    "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
+
+install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
+    "$MOUNT_POINT/etc/dpkg/dpkg.cfg.d/99-immutable"
+install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
+    "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
+install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
+    "$MOUNT_POINT/usr/lib/immutable/hooks/immutable-hook-reinstall"
+
+# ── Mount pool to access @data for daemon/CLI installation ──
 
 mkdir -p "$MOUNT_POINT/pool"
 mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
 
-# If @base exists, update it in place; otherwise create from @overlay-init
-if [ -d "$MOUNT_POINT/pool/@base" ]; then
-    echo "Updating existing @base..."
-    btrfs property set "$MOUNT_POINT/pool/@base" ro false
-else
-    echo "Creating @base from @overlay-init..."
-    btrfs subvolume snapshot "$MOUNT_POINT/pool/@overlay-init" "$MOUNT_POINT/pool/@base"
-fi
+# ── Install immutable CLI to @data (shared across all overlays) ──
 
-# Mount @base with proper block device for kernel postinst
-mkdir -p "$MOUNT_POINT/pool/@base/tmp"
-mount --bind /dev "$MOUNT_POINT/pool/@base/dev" 2>/dev/null || true
-mount -t devpts devpts "$MOUNT_POINT/pool/@base/dev/pts" -o "gid=5,mode=620,ptmxmode=0666" 2>/dev/null || true
-mount -t proc proc "$MOUNT_POINT/pool/@base/proc" 2>/dev/null || true
-mount --rbind /sys "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
-mount --make-rslave "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
-mount --bind /run "$MOUNT_POINT/pool/@base/run" 2>/dev/null || true
-cp /etc/resolv.conf "$MOUNT_POINT/pool/@base/etc/resolv.conf" 2>/dev/null || true
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/bin"
+cp "$(dirname "$0")/immutable" "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
+chmod +x "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
 
-# Install/update packages in @base (kernel postinst will work with real block device)
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get update -y
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --allow-downgrades
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades $HW_PACKAGES
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y
-chroot "$MOUNT_POINT/pool/@base" env DEBIAN_FRONTEND=noninteractive apt-get clean -y
+# Symlink from @base so CLI is in PATH for all overlays
+ln -sf /pool/@data/immutable/bin/immutable "$MOUNT_POINT/usr/local/bin/immutable"
 
-# Unmount @base
-umount -R "$MOUNT_POINT/pool/@base/dev" 2>/dev/null || true
-umount -R "$MOUNT_POINT/pool/@base/proc" 2>/dev/null || true
-umount -R "$MOUNT_POINT/pool/@base/sys" 2>/dev/null || true
-umount "$MOUNT_POINT/pool/@base/run" 2>/dev/null || true
+# Bash completions in @data
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/bash-completion"
+cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/pool/@data/immutable/bash-completion/immutable"
+ln -sf /pool/@data/immutable/bash-completion/immutable \
+    "$MOUNT_POINT/usr/share/bash-completion/completions/immutable"
 
-# Lock @base
-btrfs property set "$MOUNT_POINT/pool/@base" ro true
-echo "@base updated and locked"
+# Manpage in @data
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/man"
+gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/pool/@data/immutable/man/immutable.1.gz"
+ln -sf /pool/@data/immutable/man/immutable.1.gz \
+    "$MOUNT_POINT/usr/share/man/man1/immutable.1.gz"
 
-# Create recovery overlay (snapshot of @base, read-only safety net)
-btrfs subvolume snapshot "$MOUNT_POINT/pool/@base" "$MOUNT_POINT/pool/@overlay-recovery"
-btrfs property set "$MOUNT_POINT/pool/@overlay-recovery" ro true
-echo "Created recovery overlay (read-only)"
+# ── Install immutable daemon to @data (shared across all overlays) ──
 
-# ── Install immutable CLI ──
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/daemon"
+cp "$(dirname "$0")/daemon/"*.py "$MOUNT_POINT/pool/@data/immutable/daemon/"
+touch "$MOUNT_POINT/pool/@data/immutable/daemon/__init__.py"
 
-cp "$(dirname "$0")/immutable" "$MOUNT_POINT/usr/local/bin/immutable"
-chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
-
-# Install bash completions
-mkdir -p "$MOUNT_POINT/usr/share/bash-completion/completions"
-cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/usr/share/bash-completion/completions/immutable"
-
-# Install manpage
-mkdir -p "$MOUNT_POINT/usr/share/man/man1"
-gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/usr/share/man/man1/immutable.1.gz"
-
-# ── Install immutable daemon ──
-
-# Create immutable group
+# Daemon group and user setup
 chroot "$MOUNT_POINT" groupadd immutable 2>/dev/null || true
-
-# Add USERNAMEuser to immutable group
 chroot "$MOUNT_POINT" usermod -aG immutable USERNAME2>/dev/null || true
 
-# Install daemon modules
-mkdir -p "$MOUNT_POINT/usr/lib/immutable"
-cp "$(dirname "$0")/daemon/"*.py "$MOUNT_POINT/usr/lib/immutable/"
-touch "$MOUNT_POINT/usr/lib/immutable/__init__.py"
-
-# Install daemon systemd units
+# Daemon systemd units reference @data directly
 cp "$(dirname "$0")/immutable-daemon.service" "$MOUNT_POINT/etc/systemd/system/"
 cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
 
@@ -544,10 +481,9 @@ cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
 cp "$(dirname "$0")/tmpfiles-immutable.conf" "$MOUNT_POINT/etc/tmpfiles.d/immutable.conf"
 mkdir -p "$MOUNT_POINT/run/immutable"
 
-# Enable daemon socket
 chroot "$MOUNT_POINT" systemctl enable immutable-daemon.socket 2>/dev/null || true
 
-# Fix devpts ptmx permissions (base image may set ptmxmode=000)
+# Fix devpts ptmx permissions
 cat > "$MOUNT_POINT/etc/systemd/system/fix-devpts.service" <<'UNIT'
 [Unit]
 Description=Fix devpts ptmxmode for PTY allocation
@@ -568,31 +504,59 @@ echo "Installed immutable daemon"
 
 # ── Install systemd services for boot recovery ──
 
-cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
-chmod +x "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
+cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
+chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
+ln -sf /pool/@data/immutable/immutable-boot-counter.sh \
+    "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
 
-cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
-chmod +x "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
+cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
+chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
+ln -sf /pool/@data/immutable/immutable-healthcheck.sh \
+    "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
 
 cp "$(dirname "$0")/immutable-boot-counter.service" "$MOUNT_POINT/etc/systemd/system/immutable-boot-counter.service"
 cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/system/immutable-healthcheck.service"
 
-# Enable services
 chroot "$MOUNT_POINT" systemctl enable immutable-boot-counter.service 2>/dev/null || true
 chroot "$MOUNT_POINT" systemctl enable immutable-healthcheck.service 2>/dev/null || true
 
-# Initialize boot counter
-mkdir -p "$MOUNT_POINT/pool/@data"
-echo "0" > "$MOUNT_POINT/pool/@data/boot-counter"
-echo "@overlay-init" > "$MOUNT_POINT/pool/@data/boot-last-overlay"
-
 echo "Installed boot recovery services"
 
-# ── Cleanup ──
+# ── Unmount chroot ──
 
-umount "$MOUNT_POINT/pool" 2>/dev/null || true
+umount -R "$MOUNT_POINT/dev" 2>/dev/null || true
+umount -R "$MOUNT_POINT/proc" 2>/dev/null || true
+umount -R "$MOUNT_POINT/sys" 2>/dev/null || true
+umount "$MOUNT_POINT/run" 2>/dev/null || true
+
+# ── Unmount @base and lock ──
+
 umount "$MOUNT_POINT/boot/efi" 2>/dev/null || true
+umount "$MOUNT_POINT/pool" 2>/dev/null || true
 umount "$MOUNT_POINT" 2>/dev/null || true
+
+mount -o subvol=@base "$PART_ROOT" "$MOUNT_POINT"
+btrfs property set "$MOUNT_POINT" ro true
+umount "$MOUNT_POINT"
+
+echo "@base locked (read-only)"
+
+# ── Snapshot @base → @overlay-init and @overlay-recovery ──
+
+mkdir -p "$MOUNT_POINT"
+mount "$PART_ROOT" "$MOUNT_POINT"
+
+btrfs subvolume snapshot "$MOUNT_POINT/@base" "$MOUNT_POINT/@overlay-init"
+btrfs subvolume snapshot "$MOUNT_POINT/@base" "$MOUNT_POINT/@overlay-recovery"
+btrfs property set "$MOUNT_POINT/@overlay-recovery" ro true
+
+echo "Created @overlay-init and @overlay-recovery from @base"
+
+# Initialize boot counter in @data
+echo "0" > "$MOUNT_POINT/@data/boot-counter"
+echo "@overlay-init" > "$MOUNT_POINT/@data/boot-last-overlay"
+
+umount "$MOUNT_POINT"
 
 echo ""
 echo "══════════════════════════════════════"
