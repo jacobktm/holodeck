@@ -248,23 +248,10 @@ if lspci 2>/dev/null | grep -qi nvidia; then
     NVIDIA_BOOT_OPTS="nvidia-drm.modeset=1"
 fi
 
-# ── Install packages ──
+# ── Install immutable-aware kernelstub hooks BEFORE packages ──
 
-chroot "$MOUNT_POINT" dpkg --add-architecture i386
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get update -y
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    initramfs-tools-core initramfs-tools \
-    locales console-setup
-
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES
-
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y
-
-# ── Disable zz-kernelstub hook to prevent live ISO options from leaking ──
-
-# The live ISO kernel package installs zz-kernelstub which creates entries with
-# boot=casper and live-media-path options. Replace with immutable-aware hooks.
+# Stock kernelstub fails in chroot (no block device). Install our hooks first
+# so they intercept and skip the kernelstub call inside the chroot.
 echo "Installing immutable-aware kernelstub hooks..."
 HOOKS_SRC="$(dirname "$0")/hooks"
 
@@ -293,6 +280,19 @@ install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
 # Install reinstall script to protected location
 install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
     "$MOUNT_POINT/usr/lib/immutable/hooks/immutable-hook-reinstall"
+
+# ── Install packages ──
+
+chroot "$MOUNT_POINT" dpkg --add-architecture i386
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get update -y
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    initramfs-tools-core initramfs-tools \
+    locales console-setup
+
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES
+
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y
 
 # ── fstab ──
 

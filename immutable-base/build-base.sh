@@ -245,29 +245,8 @@ install_base_packages() {
     # Now switch to DEB822 format repos
     configure_rootfs_repos
 
-    # Update and upgrade (matching chroot.sh pattern)
-    echo "Updating package lists..."
-    run_in_chroot "apt-get update -y"
-    run_in_chroot "apt-get upgrade -y --allow-downgrades"
-
-    # Install base packages (kernel postinst will fail in chroot — no block device)
-    echo "Installing base packages..."
-    run_in_chroot "apt-get install -y $DISTRO_PKGS" || true
-    run_in_chroot "dpkg --configure -a" || true
-
-    # Install utilities
-    echo "Installing utilities..."
-    run_in_chroot "apt-get install -y $UTIL_PKGS"
-
-    # Remove unwanted packages (matching iso RM_PKGS)
-    echo "Removing unwanted packages..."
-    run_in_chroot "apt-get purge -y $RM_PKGS" || true
-
-    # Cleanup
-    run_in_chroot "apt-get autoremove --purge -y"
-    run_in_chroot "apt-get clean -y"
-
-    # Install immutable-aware kernelstub hooks (replaces stock hooks from packages)
+    # Install immutable-aware kernelstub hooks BEFORE packages.
+    # This prevents stock kernelstub from failing in the chroot (no block device).
     echo "Installing immutable-aware kernelstub hooks..."
     HOOKS_SRC="$(dirname "$0")/hooks"
 
@@ -296,6 +275,28 @@ install_base_packages() {
     # Install reinstall script to protected location
     install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
         "$ROOTFS_DIR/usr/lib/immutable/hooks/immutable-hook-reinstall"
+
+    # Update and upgrade (matching chroot.sh pattern)
+    echo "Updating package lists..."
+    run_in_chroot "apt-get update -y"
+    run_in_chroot "apt-get upgrade -y --allow-downgrades"
+
+    # Install base packages (our hooks prevent kernelstub from failing in chroot)
+    echo "Installing base packages..."
+    run_in_chroot "apt-get install -y $DISTRO_PKGS" || true
+    run_in_chroot "dpkg --configure -a" || true
+
+    # Install utilities
+    echo "Installing utilities..."
+    run_in_chroot "apt-get install -y $UTIL_PKGS"
+
+    # Remove unwanted packages (matching iso RM_PKGS)
+    echo "Removing unwanted packages..."
+    run_in_chroot "apt-get purge -y $RM_PKGS" || true
+
+    # Cleanup
+    run_in_chroot "apt-get autoremove --purge -y"
+    run_in_chroot "apt-get clean -y"
 
     # Remove temporary files
     rm -rf "$ROOTFS_DIR"/{tmp/*,var/tmp/*,var/cache/apt/archives/*.deb}

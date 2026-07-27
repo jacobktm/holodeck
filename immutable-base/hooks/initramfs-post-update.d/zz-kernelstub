@@ -3,9 +3,11 @@
 # Inside an overlay chroot: skip silently (overlay kernels don't affect host boot).
 # On the host: run kernelstub normally.
 
-# Detect chroot: /proc/1/root differs from our root
-if [ "$(readlink -f /proc/1/root)" != "/" ]; then
-    echo "immutable: skipping kernelstub (running in overlay chroot)"
+# Detect chroot: compare root filesystem device/inode to /proc/1/root's
+ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
+REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
+if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
+    echo "immutable: skipping kernelstub (running in chroot)"
     exit 0
 fi
 
