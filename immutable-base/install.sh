@@ -410,17 +410,46 @@ fi
 echo "Boot entries:"
 ls -la "$MOUNT_POINT/boot/efi/loader/entries/" 2>/dev/null || true
 
-# ── Install immutable-aware hooks into @base ──
+# ── Mount pool to access @data for daemon/CLI installation ──
+
+mkdir -p "$MOUNT_POINT/pool"
+mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
+
+# ── Install immutable CLI to @data (shared across all overlays) ──
+
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/bin"
+cp "$(dirname "$0")/immutable" "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
+chmod +x "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
+
+# Bash completions in @data
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/bash-completion"
+cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/pool/@data/immutable/bash-completion/immutable"
+
+# Manpage in @data
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/man"
+gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/pool/@data/immutable/man/immutable.1.gz"
+
+# ── Install immutable daemon to @data (shared across all overlays) ──
+
+mkdir -p "$MOUNT_POINT/pool/@data/immutable/daemon"
+cp "$(dirname "$0")/daemon/"*.py "$MOUNT_POINT/pool/@data/immutable/daemon/"
+touch "$MOUNT_POINT/pool/@data/immutable/daemon/__init__.py"
+
+# ── Install hooks to @data (protected source for overlay reinstalls) ──
 
 HOOKS_SRC="$(dirname "$0")/hooks"
 
 for dir in kernel-postinst.d initramfs-post-update.d; do
     for hook in "$HOOKS_SRC/$dir"/*; do
         [ -f "$hook" ] || continue
-        install -Dm755 "$hook" "$MOUNT_POINT/usr/lib/immutable/hooks/$dir/$(basename "$hook")"
+        install -Dm755 "$hook" "$MOUNT_POINT/pool/@data/immutable/hooks/$dir/$(basename "$hook")"
     done
 done
 
+install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
+    "$MOUNT_POINT/pool/@data/immutable/hooks/immutable-hook-reinstall"
+
+# Install active hooks into @base (these get overwritten by reinstall in overlays)
 install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
     "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
 install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
@@ -434,50 +463,43 @@ install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
     "$MOUNT_POINT/etc/dpkg/dpkg.cfg.d/99-immutable"
 install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
     "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
-install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
-    "$MOUNT_POINT/usr/lib/immutable/hooks/immutable-hook-reinstall"
 
-# ── Mount pool to access @data for daemon/CLI installation ──
+# Boot recovery scripts in @data
+cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
+chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
+cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
+chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
 
-mkdir -p "$MOUNT_POINT/pool"
-mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
+# ── Bind mount service: makes @data available at standard paths ──
 
-# ── Install immutable CLI to @data (shared across all overlays) ──
+cat > "$MOUNT_POINT/etc/systemd/system/immutable-data-mount.service" <<'UNIT'
+[Unit]
+Description=Bind-mount immutable data from @data
+After=local-fs.target
+Before=immutable-daemon.socket immutable-boot-counter.service immutable-healthcheck.service
+ConditionPathExists=/pool/@data/immutable
 
-mkdir -p "$MOUNT_POINT/pool/@data/immutable/bin"
-cp "$(dirname "$0")/immutable" "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
-chmod +x "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
+[Service]
+Type=oneshot
+ExecStart=/bin/mount --bind /pool/@data/immutable /usr/lib/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/bin/immutable /usr/local/bin/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/bash-completion/immutable /usr/share/bash-completion/completions/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/man/immutable.1.gz /usr/share/man/man1/immutable.1.gz
+RemainAfterExit=yes
 
-# Symlink from @base so CLI is in PATH for all overlays
-ln -sf /pool/@data/immutable/bin/immutable "$MOUNT_POINT/usr/local/bin/immutable"
+[Install]
+WantedBy=multi-user.target
+UNIT
+chroot "$MOUNT_POINT" systemctl enable immutable-data-mount.service 2>/dev/null || true
 
-# Bash completions in @data
-mkdir -p "$MOUNT_POINT/pool/@data/immutable/bash-completion"
-cp "$(dirname "$0")/immutable.bash" "$MOUNT_POINT/pool/@data/immutable/bash-completion/immutable"
-ln -sf /pool/@data/immutable/bash-completion/immutable \
-    "$MOUNT_POINT/usr/share/bash-completion/completions/immutable"
+# ── Daemon and system services ──
 
-# Manpage in @data
-mkdir -p "$MOUNT_POINT/pool/@data/immutable/man"
-gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/pool/@data/immutable/man/immutable.1.gz"
-ln -sf /pool/@data/immutable/man/immutable.1.gz \
-    "$MOUNT_POINT/usr/share/man/man1/immutable.1.gz"
-
-# ── Install immutable daemon to @data (shared across all overlays) ──
-
-mkdir -p "$MOUNT_POINT/pool/@data/immutable/daemon"
-cp "$(dirname "$0")/daemon/"*.py "$MOUNT_POINT/pool/@data/immutable/daemon/"
-touch "$MOUNT_POINT/pool/@data/immutable/daemon/__init__.py"
-
-# Daemon group and user setup
 chroot "$MOUNT_POINT" groupadd immutable 2>/dev/null || true
 chroot "$MOUNT_POINT" usermod -aG immutable USERNAME2>/dev/null || true
 
-# Daemon systemd units reference @data directly
 cp "$(dirname "$0")/immutable-daemon.service" "$MOUNT_POINT/etc/systemd/system/"
 cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
 
-# Create socket directory at boot via tmpfiles.d
 cp "$(dirname "$0")/tmpfiles-immutable.conf" "$MOUNT_POINT/etc/tmpfiles.d/immutable.conf"
 mkdir -p "$MOUNT_POINT/run/immutable"
 
@@ -500,27 +522,13 @@ WantedBy=sysinit.target
 UNIT
 chroot "$MOUNT_POINT" systemctl enable fix-devpts.service 2>/dev/null || true
 
-echo "Installed immutable daemon"
-
-# ── Install systemd services for boot recovery ──
-
-cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
-chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
-ln -sf /pool/@data/immutable/immutable-boot-counter.sh \
-    "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
-
-cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
-chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
-ln -sf /pool/@data/immutable/immutable-healthcheck.sh \
-    "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
-
-cp "$(dirname "$0")/immutable-boot-counter.service" "$MOUNT_POINT/etc/systemd/system/immutable-boot-counter.service"
-cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/system/immutable-healthcheck.service"
+cp "$(dirname "$0")/immutable-boot-counter.service" "$MOUNT_POINT/etc/systemd/system/"
+cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/system/"
 
 chroot "$MOUNT_POINT" systemctl enable immutable-boot-counter.service 2>/dev/null || true
 chroot "$MOUNT_POINT" systemctl enable immutable-healthcheck.service 2>/dev/null || true
 
-echo "Installed boot recovery services"
+echo "Installed immutable daemon and services"
 
 # ── Unmount chroot ──
 

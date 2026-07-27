@@ -171,6 +171,22 @@ class ChrootMount:
         _mkdir_p(f"{root}/tmp")
         _bind("/tmp", f"{root}/tmp")
 
+        # --- @data bind mounts: make immutable infrastructure available ---
+        # Daemon, CLI, hooks live in @data and are bind-mounted into every overlay.
+        data_immutable = "/pool/@data/immutable"
+        if os.path.isdir(data_immutable):
+            bind_map = {
+                data_immutable:                                  f"{root}/usr/lib/immutable",
+                f"{data_immutable}/bin/immutable":               f"{root}/usr/local/bin/immutable",
+                f"{data_immutable}/bash-completion/immutable":   f"{root}/usr/share/bash-completion/completions/immutable",
+                f"{data_immutable}/man/immutable.1.gz":          f"{root}/usr/share/man/man1/immutable.1.gz",
+            }
+            for src, dst in bind_map.items():
+                if os.path.exists(src):
+                    _mkdir_p(dst)
+                    if _bind(src, dst):
+                        mounts_done.append(dst)
+
         # User data mounts — skip for @base (read-only, mounts won't persist)
         base_ro = subprocess.run(
             ["btrfs", "property", "get", root, "ro"],
