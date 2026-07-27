@@ -18,20 +18,41 @@ VERSION = "0.4.0"
 SOCKET_PATH = "/run/immutable/daemon.sock"
 
 
+def _start_daemon():
+    """Try to start the daemon socket via systemctl (needs root)."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["sudo", "-n", "systemctl", "start", "immutable-daemon.socket"],
+            check=True, capture_output=True, timeout=10,
+        )
+        import time
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+
 def connect() -> socket.socket:
-    """Connect to the daemon socket."""
+    """Connect to the daemon socket, starting it if necessary."""
     if not os.path.exists(SOCKET_PATH):
-        print("ERROR: Daemon not running. Start with: systemctl start immutable-daemon.socket",
-              file=sys.stderr)
-        sys.exit(1)
+        _start_daemon()
+        if not os.path.exists(SOCKET_PATH):
+            print("ERROR: Daemon not running. Start with: systemctl start immutable-daemon.socket",
+                  file=sys.stderr)
+            sys.exit(1)
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.connect(SOCKET_PATH)
     except ConnectionRefusedError:
-        print("ERROR: Cannot connect to daemon. Is it running?", file=sys.stderr)
-        print("  systemctl start immutable-daemon.socket", file=sys.stderr)
-        sys.exit(1)
+        _start_daemon()
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(SOCKET_PATH)
+        except (ConnectionRefusedError, FileNotFoundError):
+            print("ERROR: Cannot connect to daemon. Is it running?", file=sys.stderr)
+            print("  systemctl start immutable-daemon.socket", file=sys.stderr)
+            sys.exit(1)
     return sock
 
 
