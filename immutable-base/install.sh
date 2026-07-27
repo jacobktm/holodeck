@@ -490,7 +490,7 @@ cat > "$MOUNT_POINT/etc/systemd/system/immutable-data-mount.service" <<'UNIT'
 [Unit]
 Description=Bind-mount immutable data from @data
 After=local-fs.target systemd-remount-fs.service
-Before=immutable-daemon.socket immutable-boot-counter.service immutable-healthcheck.service
+Before=sockets.target immutable-daemon.socket immutable-boot-counter.service immutable-healthcheck.service
 RequiresMountsFor=/pool
 ConditionPathExists=/pool/@data/immutable
 
@@ -544,6 +544,8 @@ mkdir -p "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants"
 
 ln -sf /etc/systemd/system/immutable-data-mount.service \
     "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/immutable-data-mount.service"
+ln -sf /etc/systemd/system/immutable-data-mount.service \
+    "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants/immutable-data-mount.service"
 ln -sf /etc/systemd/system/immutable-daemon.socket \
     "$MOUNT_POINT/etc/systemd/system/sockets.target.wants/immutable-daemon.socket"
 ln -sf /etc/systemd/system/fix-devpts.service \

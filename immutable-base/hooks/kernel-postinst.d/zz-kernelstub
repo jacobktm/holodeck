@@ -1,11 +1,17 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for kernel post-install.
-# In a chroot: unlock ESP, run kernelstub, re-lock ESP.
-# On the host: run kernelstub normally.
-#
-# ESP unlock requires cached sudo credentials. Pre-authorize with:
-#   sudo -v
-# or use 'immutable shell' which handles this automatically.
+# ESP modifications require daemon authorization (immutable auth).
+# Without it, kernelstub is skipped and the user is told to authenticate.
+
+ESP_AUTH_MARKER="/run/immutable/esp-authorized"
+ESP_AUTH_TTL_MIN=10
+
+# Check if ESP is authorized: marker exists and is less than ESP_AUTH_TTL_MIN old
+check_esp_auth() {
+    [ -f "$ESP_AUTH_MARKER" ] || return 1
+    # find -mmin returns true if file was modified less than N minutes ago
+    find "$ESP_AUTH_MARKER" -mmin -"$ESP_AUTH_TTL_MIN" -print -quit 2>/dev/null | grep -q .
+}
 
 # Detect chroot: compare root filesystem device/inode to /proc/1/root's
 ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
@@ -20,13 +26,22 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
 
     # Check if ESP is already writable (boot overlay case)
     if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
-        # Already writable — run kernelstub directly
+        # Already writable — check authorization
+        if ! check_esp_auth; then
+            echo "kernelstub: ESP not authorized. Run 'immutable auth' first." >&2
+            exit 0
+        fi
         INITRD="/boot/initrd.img-$1"
         KERNEL="$2"
         exec kernelstub --verbose --preserve-live-mode
     fi
 
-    # ESP is read-only — try to unlock (needs cached sudo)
+    # ESP is read-only — check authorization before trying to unlock
+    if ! check_esp_auth; then
+        echo "kernelstub: ESP not authorized. Run 'immutable auth' first." >&2
+        exit 0
+    fi
+
     if sudo -n mount -o remount,rw,bind "$ESP" 2>/dev/null; then
         INITRD="/boot/initrd.img-$1"
         KERNEL="$2"
@@ -39,7 +54,12 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     exit 0
 fi
 
-# On the host: run kernelstub normally
+# On the host: check authorization before running kernelstub
+if ! check_esp_auth; then
+    echo "kernelstub: ESP not authorized. Run 'immutable auth' first." >&2
+    exit 0
+fi
+
 INITRD="/boot/initrd.img-$1"
 KERNEL="$2"
 

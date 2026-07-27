@@ -2,6 +2,7 @@
 Description=Immutable overlay management daemon
 After=local-fs.target immutable-data-mount.service
 Requires=local-fs.target
+Wants=immutable-data-mount.service
 RefuseManualStart=yes
 
 [Service]
