@@ -161,8 +161,9 @@ class Daemon:
         sock.settimeout(None)
         Message.send(sock, {"ok": True})
 
-        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env)
+        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env, password=msg.get("password", ""))
         exit_code = relay.run()
+        self.handler.teardown_chroot(mount_ctx)
 
     def _handle_pty_session(self, sock, msg):
         """Handle an interactive PTY session."""
@@ -185,7 +186,7 @@ class Daemon:
         Message.send(sock, {"ok": True})
 
         t0 = time.monotonic()
-        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env)
+        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env, password=msg.get("password", ""))
         exit_code = relay.run()
         t1 = time.monotonic()
         log.debug("PTY relay ran for %.2fs, exit_code=%d", t1 - t0, exit_code)

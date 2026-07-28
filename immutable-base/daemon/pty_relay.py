@@ -23,7 +23,7 @@ class PtyRelay:
     """Manages a PTY session between a socket client and a chroot shell."""
 
     def __init__(self, sock, mount_ctx: Dict[str, Any], overlay_name: str,
-                 args: list, env: dict = None):
+                 args: list, env: dict = None, password: str = ""):
         self.sock = sock
         self.mount_ctx = mount_ctx
         self.root = mount_ctx["root"]
@@ -31,6 +31,8 @@ class PtyRelay:
         self.overlay_name = overlay_name
         self.args = args
         self.env = env or {}
+        self.password = password
+        self.askpass_path = None
         self.child_pid = None
         self.master_fd = None
 
@@ -60,6 +62,21 @@ class PtyRelay:
             "LANG": "en_US.UTF-8",
         }
         env.update(self.env)
+
+        # Set up SUDO_ASKPASS so sudo uses the same password the user
+        # already typed for daemon auth — avoids a second prompt.
+        if self.password:
+            askpass = f"{self.root}/tmp/immutable-askpass"
+            try:
+                with open(askpass, "w") as f:
+                    f.write("#!/bin/sh\n")
+                    f.write('echo "$IMMUTABLE_SUDO_PASS"\n')
+                os.chmod(askpass, 0o700)
+                env["SUDO_ASKPASS"] = "/tmp/immutable-askpass"
+                env["IMMUTABLE_SUDO_PASS"] = self.password
+                self.askpass_path = askpass
+            except Exception as e:
+                log.warning("Failed to set up SUDO_ASKPASS: %s", e)
 
         pid = os.fork()
         if pid == 0:
@@ -139,6 +156,13 @@ class PtyRelay:
                 log.debug("master_fd %d closed", master_fd)
             except OSError:
                 pass
+
+            # Clean up SUDO_ASKPASS helper
+            if self.askpass_path:
+                try:
+                    os.unlink(self.askpass_path)
+                except OSError:
+                    pass
 
         return exit_code
 
