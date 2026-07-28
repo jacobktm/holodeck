@@ -1,8 +1,25 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for kernel post-install.
 # Creates transient ESP auth for the duration of the kernelstub call.
+# On the host, syncs the real ESP back to the overlay's ESP copy.
 
 ESP_AUTH_MARKER="/run/immutable/esp-authorized"
+
+# Sync real ESP back to the current overlay's mock ESP copy so
+# the overlay's copy stays in sync with what kernelstub just wrote.
+sync_back_to_overlay() {
+    local subvol
+    subvol=$(findmnt -no OPTIONS / 2>/dev/null | grep -oP 'subvol=\K[^,]+' 2>/dev/null)
+    [ -n "$subvol" ] || return 0
+    # Only sync if this is a non-base overlay
+    case "$subvol" in
+        @overlay-*) ;;
+        *) return 0 ;;
+    esac
+    local overlay_esp="/pool/$subvol/boot/efi"
+    [ -d "$overlay_esp" ] || return 0
+    rsync -a --delete /boot/efi/ "$overlay_esp/" 2>/dev/null || true
+}
 
 ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
 REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
@@ -45,5 +62,8 @@ INITRD="/boot/initrd.img-$1"
 KERNEL="$2"
 
 kernelstub --verbose --preserve-live-mode || true
+
+# Sync back to overlay's ESP copy so switch doesn't destroy changes
+sync_back_to_overlay
 
 rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true

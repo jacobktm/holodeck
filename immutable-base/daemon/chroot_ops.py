@@ -252,7 +252,13 @@ class ChrootMount:
                         pass
 
     def sync_esp(self, overlay_root: str):
-        """Sync an overlay's /boot/efi copy to the real ESP."""
+        """Sync an overlay's /boot/efi copy to the real ESP.
+
+        Copies kernel/initrd files and boot entries TO the real ESP
+        without deleting anything — each overlay's files accumulate so
+        switching back doesn't destroy the other overlay's boot entries.
+        Clean up stale entries manually with 'immutable clean-boot'.
+        """
         overlay_esp = f"{overlay_root}/boot/efi"
         if not os.path.isdir(overlay_esp) or not os.listdir(overlay_esp):
             return
@@ -260,9 +266,9 @@ class ChrootMount:
         if not os.path.ismount(real_esp):
             return
         try:
-            # rsync from overlay ESP to real ESP (delete files not in overlay)
+            # rsync from overlay ESP to real ESP (no --delete — accumulate)
             subprocess.run(
-                ["rsync", "-a", "--delete", f"{overlay_esp}/", f"{real_esp}/"],
+                ["rsync", "-a", f"{overlay_esp}/", f"{real_esp}/"],
                 check=True, capture_output=True, timeout=30,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
