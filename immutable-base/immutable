@@ -472,8 +472,7 @@ Usage:
   immutable clean-boot          Remove stale boot entries from the ESP
   immutable update-initramfs [args]   Run update-initramfs in boot overlay and update ESP
                                      (all arguments passed to update-initramfs)
-  immutable auth                Authorize ESP modifications (10 min)
-  immutable deauth              Revoke ESP authorization immediately
+  immutable clean-boot          Remove stale boot entries from the ESP
   immutable update              Update CLI from @data
   immutable help                Show this help""")
 
@@ -516,10 +515,6 @@ def main():
         cmd_simple({"cmd": "reset-recovery"})
     elif cmd == "clean-boot":
         cmd_simple({"cmd": "clean-boot"})
-    elif cmd == "auth":
-        cmd_simple({"cmd": "auth-esp", "password": get_password()})
-    elif cmd == "deauth":
-        cmd_simple({"cmd": "deauth-esp"})
     elif cmd == "update-initramfs":
         cmd_simple({"cmd": "update-initramfs", "args": sys.argv[2:]})
     elif cmd == "create":

@@ -28,12 +28,6 @@ SYSTEM_OVERLAYS = frozenset({INIT_OVERLAY, RECOVERY_OVERLAY})
 # Commands that require password authentication
 AUTH_REQUIRED = {"unlock", "switch"}
 
-# How long ESP authorization lasts (seconds)
-ESP_AUTH_TTL = 600  # 10 minutes
-
-# File created by daemon to authorize ESP modifications
-ESP_AUTH_MARKER = "/run/immutable/esp-authorized"
-
 # Commands allowed on @base without authentication (read-only inspection).
 # When @base is locked (btrfs ro=true), even these can't write anything.
 # apt/dpkg excluded — they modify state even on read-only roots.
@@ -119,8 +113,6 @@ class CommandHandler:
             "reset-recovery":  self._cmd_reset_recovery,
             "clean-boot":      self._cmd_clean_boot,
             "update-initramfs": self._cmd_update_initramfs,
-            "auth-esp":        self._cmd_auth_esp,
-            "deauth-esp":      self._cmd_deauth_esp,
         }
 
         handler = dispatch.get(cmd)
@@ -428,35 +420,6 @@ class CommandHandler:
             return {"ok": False, "error": "Base system not found"}
         self.btrfs.set_property(base, "ro", "false")
         return {"ok": True, "output": "Making @base writable...\n@base is now writable. Run apt update/upgrade as needed.\nUse 'immutable lock' when done."}
-
-    def _cmd_auth_esp(self, msg):
-        """Authorize ESP modifications for ESP_AUTH_TTL seconds.
-
-        Creates a marker file that kernel/initramfs hooks check before
-        running kernelstub.  The hook fails with a user-visible message
-        if this marker is missing or expired.
-        """
-        password = msg.get("password")
-        if not password:
-            return {"ok": False, "error": "Password required", "auth_required": True}
-        username = self.chroot._get_username()
-        if not verify_password(username, password):
-            return {"ok": False, "error": "Authentication failed"}
-        try:
-            import time
-            os.makedirs(os.path.dirname(ESP_AUTH_MARKER), exist_ok=True)
-            Path(ESP_AUTH_MARKER).write_text(str(int(time.time())))
-        except OSError as e:
-            return {"ok": False, "error": f"Failed to create auth marker: {e}"}
-        return {"ok": True, "output": f"ESP authorized for {ESP_AUTH_TTL // 60} minutes."}
-
-    def _cmd_deauth_esp(self, msg):
-        """Revoke ESP authorization immediately."""
-        try:
-            os.unlink(ESP_AUTH_MARKER)
-        except FileNotFoundError:
-            pass
-        return {"ok": True, "output": "ESP authorization revoked."}
 
     def _cmd_reset_recovery(self, msg):
         self._ensure_pool()

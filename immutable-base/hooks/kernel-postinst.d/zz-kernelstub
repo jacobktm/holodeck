@@ -1,17 +1,11 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for kernel post-install.
-# Creates transient ESP auth for the duration of the kernelstub call.
 # On the host, syncs the real ESP back to the overlay's ESP copy.
 
-ESP_AUTH_MARKER="/run/immutable/esp-authorized"
-
-# Sync real ESP back to the current overlay's mock ESP copy so
-# the overlay's copy stays in sync with what kernelstub just wrote.
 sync_back_to_overlay() {
     local subvol
     subvol=$(findmnt -no OPTIONS / 2>/dev/null | grep -oP 'subvol=\K[^,]+' 2>/dev/null)
     [ -n "$subvol" ] || return 0
-    # Only sync if this is a non-base overlay
     case "$subvol" in
         @overlay-*) ;;
         *) return 0 ;;
@@ -26,44 +20,28 @@ REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
 
 if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     ESP="/boot/efi"
-
     if ! mountpoint -q "$ESP" 2>/dev/null; then
         exit 0
     fi
-
     if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
-        mkdir -p /run/immutable 2>/dev/null || true
-        touch "$ESP_AUTH_MARKER" 2>/dev/null || true
         INITRD="/boot/initrd.img-$1"
         KERNEL="$2"
         kernelstub --verbose --preserve-live-mode || true
-        rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true
         exit 0
     fi
-
     if mount -o remount,rw,bind "$ESP" 2>/dev/null; then
-        mkdir -p /run/immutable 2>/dev/null || true
-        touch "$ESP_AUTH_MARKER" 2>/dev/null || true
         INITRD="/boot/initrd.img-$1"
         KERNEL="$2"
         kernelstub --verbose --preserve-live-mode || true
-        rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true
         mount -o remount,ro,bind "$ESP" 2>/dev/null
         exit 0
     fi
-
     exit 0
 fi
-
-mkdir -p /run/immutable 2>/dev/null || true
-touch "$ESP_AUTH_MARKER" 2>/dev/null || true
 
 INITRD="/boot/initrd.img-$1"
 KERNEL="$2"
 
 kernelstub --verbose --preserve-live-mode || true
 
-# Sync back to overlay's ESP copy so switch doesn't destroy changes
 sync_back_to_overlay
-
-rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true
