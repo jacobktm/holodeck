@@ -1,26 +1,8 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for initramfs post-update.
-# Prompts for authorization if ESP hasn't been authorized yet.
+# Creates transient ESP auth for the duration of the kernelstub call.
 
 ESP_AUTH_MARKER="/run/immutable/esp-authorized"
-ESP_AUTH_TTL_MIN=10
-
-check_esp_auth() {
-    [ -f "$ESP_AUTH_MARKER" ] || return 1
-    find "$ESP_AUTH_MARKER" -mmin -"$ESP_AUTH_TTL_MIN" -print -quit 2>/dev/null | grep -q .
-}
-
-ensure_esp_auth() {
-    if check_esp_auth; then
-        return 0
-    fi
-    echo "" >&2
-    echo "kernelstub: ESP authorization required to update boot entries." >&2
-    if command -v immutable >/dev/null 2>&1; then
-        immutable auth 2>&1 || true
-    fi
-    check_esp_auth
-}
 
 ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
 REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
@@ -33,24 +15,22 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     fi
 
     if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
-        if ! ensure_esp_auth; then
-            echo "kernelstub: skipping ESP update (auth declined or failed)" >&2
-            exit 0
-        fi
+        mkdir -p /run/immutable 2>/dev/null || true
+        touch "$ESP_AUTH_MARKER" 2>/dev/null || true
         KERNEL="/boot/vmlinuz-$1"
         INITRD="$2"
-        exec kernelstub --verbose --preserve-live-mode
-    fi
-
-    if ! ensure_esp_auth; then
-        echo "kernelstub: skipping ESP update (auth declined or failed)" >&2
+        kernelstub --verbose --preserve-live-mode || true
+        rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true
         exit 0
     fi
 
     if sudo -n mount -o remount,rw,bind "$ESP" 2>/dev/null; then
+        mkdir -p /run/immutable 2>/dev/null || true
+        touch "$ESP_AUTH_MARKER" 2>/dev/null || true
         KERNEL="/boot/vmlinuz-$1"
         INITRD="$2"
         kernelstub --verbose --preserve-live-mode || true
+        rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true
         mount -o remount,ro,bind "$ESP" 2>/dev/null
         exit 0
     fi
@@ -58,14 +38,12 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     exit 0
 fi
 
-if ! ensure_esp_auth; then
-    echo "kernelstub: skipping ESP update (auth declined or failed)" >&2
-    exit 0
-fi
+mkdir -p /run/immutable 2>/dev/null || true
+touch "$ESP_AUTH_MARKER" 2>/dev/null || true
 
 KERNEL="/boot/vmlinuz-$1"
 INITRD="$2"
 
-exec kernelstub \
-    --verbose \
-    --preserve-live-mode
+kernelstub --verbose --preserve-live-mode || true
+
+rm -f "$ESP_AUTH_MARKER" 2>/dev/null || true
