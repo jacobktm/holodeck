@@ -254,10 +254,7 @@ class ChrootMount:
     def sync_esp(self, overlay_root: str):
         """Sync an overlay's /boot/efi copy to the real ESP.
 
-        Copies kernel/initrd files and boot entries TO the real ESP
-        without deleting anything — each overlay's files accumulate so
-        switching back doesn't destroy the other overlay's boot entries.
-        Clean up stale entries manually with 'immutable clean-boot'.
+        Caller must remount ESP rw before calling, ro after.
         """
         overlay_esp = f"{overlay_root}/boot/efi"
         if not os.path.isdir(overlay_esp) or not os.listdir(overlay_esp):
@@ -266,13 +263,31 @@ class ChrootMount:
         if not os.path.ismount(real_esp):
             return
         try:
-            # rsync from overlay ESP to real ESP (no --delete — accumulate)
             subprocess.run(
                 ["rsync", "-a", f"{overlay_esp}/", f"{real_esp}/"],
                 check=True, capture_output=True, timeout=30,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             log.warning("Failed to sync overlay ESP to real ESP: %s", e)
+
+    @staticmethod
+    def esp_remount(mode: str) -> bool:
+        """Remount the real ESP. Returns True if it was ro before."""
+        try:
+            out = subprocess.run(
+                ["findmnt", "-no", "OPTIONS", "/boot/efi"],
+                capture_output=True, text=True, timeout=5,
+            )
+            was_ro = "ro" in out.stdout
+            if not was_ro and mode == "rw":
+                return False
+            subprocess.run(
+                ["mount", "-o", f"remount,{mode}", "/boot/efi"],
+                check=True, capture_output=True, timeout=10,
+            )
+            return was_ro
+        except Exception:
+            return False
 
     def _get_username(self) -> str:
         """Read the configured username."""

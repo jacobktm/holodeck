@@ -267,7 +267,7 @@ SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
 cat > "$MOUNT_POINT/etc/fstab" <<FSTAB
 UUID=$ROOT_UUID  /            btrfs  defaults,noatime,compress=zstd:1,ssd,subvol=@overlay-init  0 0
 UUID=$ROOT_UUID  /pool        btrfs  defaults,noatime,subvolid=5                                0 0
-UUID=$EFI_UUID   /boot/efi    vfat   defaults,noatime,fmask=0022,dmask=0022,codepage=437        0 2
+UUID=$EFI_UUID   /boot/efi    vfat   defaults,noatime,fmask=0022,dmask=0022,codepage=437,ro        0 2
 /dev/mapper/cryptswap  none  swap   sw                                                          0 0
 FSTAB
 

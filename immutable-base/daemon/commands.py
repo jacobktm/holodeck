@@ -343,7 +343,12 @@ class CommandHandler:
         boot_subvol = self.boot.get_active_subvol()
         boot_reverted = False
         if boot_subvol == f"@overlay-{name}":
-            self._revert_boot_to_init()
+            was_ro = self.chroot.esp_remount("rw")
+            try:
+                self._revert_boot_to_init()
+            finally:
+                if was_ro:
+                    self.chroot.esp_remount("ro")
             boot_reverted = True
 
         self.btrfs.delete_subvol(dst)
@@ -391,19 +396,24 @@ class CommandHandler:
 
         self._ensure_pool()
 
-        # Sync current boot overlay's ESP to the real ESP before switching
-        current = self.boot.get_active_subvol()
-        if current:
-            current_root = f"{POOL}/{current}"
-            if os.path.isdir(current_root):
-                self.chroot.sync_esp(current_root)
+        was_ro = self.chroot.esp_remount("rw")
+        try:
+            # Sync current boot overlay's ESP to the real ESP before switching
+            current = self.boot.get_active_subvol()
+            if current:
+                current_root = f"{POOL}/{current}"
+                if os.path.isdir(current_root):
+                    self.chroot.sync_esp(current_root)
 
-        dst = f"{POOL}/{OVERLAY_PREFIX}{name}"
-        if not os.path.isdir(dst):
-            return {"ok": False, "error": f"Overlay '{name}' not found"}
+            dst = f"{POOL}/{OVERLAY_PREFIX}{name}"
+            if not os.path.isdir(dst):
+                return {"ok": False, "error": f"Overlay '{name}' not found"}
 
-        self.boot.set_active_overlay(name)
-        return {"ok": True, "output": f"Boot entry updated to: @overlay-{name}\nReboot to activate."}
+            self.boot.set_active_overlay(name)
+            return {"ok": True, "output": f"Boot entry updated to: @overlay-{name}\nReboot to activate."}
+        finally:
+            if was_ro:
+                self.chroot.esp_remount("ro")
 
     def _cmd_lock(self, msg):
         self._ensure_pool()
@@ -458,7 +468,12 @@ class CommandHandler:
 
             kernel_path = f"{esp}/{linux_match.group(1)}"
             if not os.path.isfile(kernel_path):
-                entry.unlink()
+                was_ro = self.chroot.esp_remount("rw")
+                try:
+                    entry.unlink()
+                finally:
+                    if was_ro:
+                        self.chroot.esp_remount("ro")
                 removed.append(name)
             else:
                 kept.append(name)
@@ -554,7 +569,12 @@ class CommandHandler:
             _shutil.copy2(f"{esp_kernel_dir}/initrd.img", f"{esp_kernel_dir}/initrd.img-previous")
 
             # Sync overlay's ESP copy to the real ESP
-            self.chroot.sync_esp(root)
+            was_ro = self.chroot.esp_remount("rw")
+            try:
+                self.chroot.sync_esp(root)
+            finally:
+                if was_ro:
+                    self.chroot.esp_remount("ro")
 
             return {"ok": True, "output": (
                 f"update-initramfs completed for {version}\n"

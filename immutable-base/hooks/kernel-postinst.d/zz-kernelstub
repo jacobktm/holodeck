@@ -1,5 +1,6 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for kernel post-install.
+# Remounts ESP rw for kernelstub, then ro after.
 # On the host, syncs the real ESP back to the overlay's ESP copy.
 
 sync_back_to_overlay() {
@@ -39,9 +40,19 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     exit 0
 fi
 
+ESP="/boot/efi"
+
+RO_WAS=""
+if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+    RO_WAS=1
+    mount -o remount,rw "$ESP" 2>/dev/null || exit 0
+fi
+
 INITRD="/boot/initrd.img-$1"
 KERNEL="$2"
 
 kernelstub --verbose --preserve-live-mode || true
 
 sync_back_to_overlay
+
+[ -n "$RO_WAS" ] && mount -o remount,ro "$ESP" 2>/dev/null || true
