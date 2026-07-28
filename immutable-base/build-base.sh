@@ -228,7 +228,6 @@ KERNELSTUB
 
     # Root password (user created during install)
     echo "root:root" | chroot "$ROOTFS_DIR" chpasswd
-    echo "ALL ALL=(ALL) NOPASSWD: ALL" > "$ROOTFS_DIR/etc/sudoers.d/nopasswd"
 
     # Enable services
     chroot "$ROOTFS_DIR" systemctl enable NetworkManager 2>/dev/null || true

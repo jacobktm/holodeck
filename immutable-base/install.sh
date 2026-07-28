@@ -203,17 +203,11 @@ echo "Creating user: $USERNAME"
 chroot "$MOUNT_POINT" useradd -m -s /bin/bash -G sudo "$USERNAME" 2>/dev/null || true
 echo "$USERNAME:$PASSWORD" | chroot "$MOUNT_POINT" chpasswd
 
-# Write immutable config (used by immutable CLI for username)
+# immutable config (used by immutable CLI for username)
 cat > "$MOUNT_POINT/etc/immutable.conf" <<CONF
 # Immutable Pop!_OS configuration
 USERNAME=$USERNAME
 CONF
-
-# Passwordless sudo inside chroots (overlays snapshot this)
-cat > "$MOUNT_POINT/etc/sudoers.d/immutable-$USERNAME" <<SUDOERS
-$USERNAME ALL=(ALL) NOPASSWD: ALL
-SUDOERS
-chmod 0440 "$MOUNT_POINT/etc/sudoers.d/immutable-$USERNAME"
 
 # ── Kernelstub config (must exist before apt postinst runs) ──
 

@@ -41,7 +41,7 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
         exit 0
     fi
 
-    if sudo -n mount -o remount,rw,bind "$ESP" 2>/dev/null; then
+    if mount -o remount,rw,bind "$ESP" 2>/dev/null; then
         mkdir -p /run/immutable 2>/dev/null || true
         touch "$ESP_AUTH_MARKER" 2>/dev/null || true
         INITRD="/boot/initrd.img-$1"
