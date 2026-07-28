@@ -136,62 +136,9 @@ def cmd_simple(args: dict):
 
 
 def cmd_run(overlay: str, run_args: list):
-    """Run a non-interactive command with streaming output."""
-    sock = connect()
-    try:
-        cmd = {
-            "cmd": "run",
-            "overlay": overlay,
-            "args": run_args,
-            "env": get_session_env(),
-        }
-        msg = json.dumps(cmd, separators=(",", ":")) + "\n"
-        sock.sendall(msg.encode("utf-8"))
-
-        exit_code = 1
-        buf = b""
-        auth_checked = False
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line.decode("utf-8"))
-                except json.JSONDecodeError:
-                    continue
-
-                # Check for auth required on first response
-                if not auth_checked and event.get("auth_required"):
-                    sock.close()
-                    cmd["password"] = get_password()
-                    sock = connect()
-                    msg = json.dumps(cmd, separators=(",", ":")) + "\n"
-                    sock.sendall(msg.encode("utf-8"))
-                    auth_checked = True
-                    continue
-                auth_checked = True
-
-                if "error" in event and not event.get("ok", True):
-                    print(f"ERROR: {event['error']}", file=sys.stderr)
-                    sys.exit(1)
-                elif event.get("stream") == "stdout":
-                    sys.stdout.write(event.get("data", ""))
-                    sys.stdout.flush()
-                elif event.get("stream") == "stderr":
-                    sys.stderr.write(event.get("data", ""))
-                    sys.stderr.flush()
-                elif event.get("type") == "done":
-                    exit_code = event.get("exit_code", 1)
-
-        sys.exit(exit_code)
-    finally:
-        sock.close()
+    """Run a command with PTY (stdin relay for sudo password)."""
+    # PTY-based run is identical to shell -c <command>
+    cmd_shell(overlay, run_args)
 
 
 def cmd_shell(overlay: str, shell_args: list):

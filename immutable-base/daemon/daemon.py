@@ -145,11 +145,24 @@ class Daemon:
         Message.send(sock, result)
 
     def _handle_run(self, sock, msg):
-        """Handle a non-interactive run command with streaming output."""
-        Message.send(sock, {"ok": True, "stream": True})
+        """Handle a non-interactive run command with PTY."""
+        mount_ctx = self.handler.setup_chroot(msg)
+        if mount_ctx is None:
+            if self.handler._last_auth_required:
+                Message.send(sock, {"ok": False, "error": "Password required", "auth_required": True})
+            else:
+                Message.send(sock, {"ok": False, "error": "Failed to set up chroot"})
+            return
 
-        for event in self.handler.execute_run(msg):
-            Message.send(sock, event)
+        overlay_name = msg.get("overlay", "@base")
+        args = msg.get("args", [])
+        env = msg.get("env", {})
+
+        sock.settimeout(None)
+        Message.send(sock, {"ok": True})
+
+        relay = PtyRelay(sock, mount_ctx, overlay_name, args, env=env)
+        exit_code = relay.run()
 
     def _handle_pty_session(self, sock, msg):
         """Handle an interactive PTY session."""

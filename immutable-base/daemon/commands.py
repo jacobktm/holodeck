@@ -1,12 +1,10 @@
 """Command dispatch and implementations."""
 import os
 import re
-import select
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional, Generator, List
+from typing import Dict, Any, Optional, List
 
 from btrfs_ops import BtrfsOps
 from boot_ops import BootOps
@@ -27,43 +25,6 @@ SYSTEM_OVERLAYS = frozenset({INIT_OVERLAY, RECOVERY_OVERLAY})
 
 # Commands that require password authentication
 AUTH_REQUIRED = {"unlock", "switch"}
-
-# Commands allowed on @base without authentication (read-only inspection).
-# When @base is locked (btrfs ro=true), even these can't write anything.
-# apt/dpkg excluded — they modify state even on read-only roots.
-READONLY_CMDS = {
-    # File inspection
-    "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep",
-    "less", "more", "file", "stat", "du", "df", "tree",
-    # Command lookup
-    "which", "type", "command",
-    # Conditional checks
-    "test", "[",
-    # Checksums and metadata
-    "sha256sum", "md5sum", "sha1sum", "shasum",
-    # System info
-    "uname", "hostname", "id", "whoami", "who", "w",
-    # Output
-    "echo", "printf",
-    # Environment
-    "env", "printenv",
-    # Path manipulation
-    "readlink", "realpath", "basename", "dirname",
-    # Text processing (read-only transforms)
-    "sort", "uniq", "cut", "tr", "sed", "awk", "column",
-    # Other
-    "date", "cal", "true", "false",
-}
-
-
-def _is_readonly_cmd(args: list) -> bool:
-    """Check if a command args list is a whitelisted read-only command."""
-    if not args:
-        return False
-    # Get the actual command name (last component of path)
-    cmd_name = os.path.basename(args[0])
-    return cmd_name in READONLY_CMDS
-
 
 def verify_password(username: str, password: str) -> bool:
     """Verify a user's password via PAM (su)."""
@@ -123,41 +84,6 @@ class CommandHandler:
             return handler(msg)
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-    def execute_run(self, msg: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
-        """Execute a streaming 'run' command. Yields event dicts."""
-        overlay = msg.get("overlay")
-        args = msg.get("args", [])
-        env = msg.get("env", {})
-
-        if not overlay:
-            yield {"ok": False, "error": "Missing 'overlay' field"}
-            return
-        if not args:
-            yield {"ok": False, "error": "Missing 'args' field"}
-            return
-
-        # @base: require auth for non-whitelisted (potentially mutating) commands
-        if overlay == "@base" and not _is_readonly_cmd(args):
-            password = msg.get("password")
-            if not password:
-                yield {"ok": False, "error": "Password required for @base write operations", "auth_required": True}
-                return
-            username = self.chroot._get_username()
-            if not verify_password(username, password):
-                yield {"ok": False, "error": "Authentication failed"}
-                return
-
-        root = self._resolve_overlay_path(overlay)
-        if root is None:
-            yield {"ok": False, "error": f"Overlay '{overlay}' not found"}
-            return
-
-        mount_ctx = self.chroot.mount(root)
-        try:
-            yield from self._exec_in_chroot(root, args, env, mount_ctx)
-        finally:
-            self.chroot.unmount(root, mount_ctx)
 
     def setup_chroot(self, msg: Dict[str, Any]) -> Optional[Any]:
         """Set up chroot mounts for a PTY session.
@@ -585,67 +511,6 @@ class CommandHandler:
 
         finally:
             self.chroot.unmount(root, mount_ctx)
-
-    def _exec_in_chroot(self, root, args, env, mount_ctx):
-        """Execute a command inside the chroot as the configured user, streaming stdout/stderr."""
-        import pwd as _pwd
-        username = self.chroot._get_username()
-        pw = _pwd.getpwnam(username)
-
-        # Build environment
-        full_env = {
-            "HOME": f"/home/{username}",
-            "USER": username,
-            "LOGNAME": username,
-            "SHELL": "/bin/bash",
-            "TERM": env.get("TERM", "xterm-256color"),
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "LANG": "en_US.UTF-8",
-        }
-        full_env.update({k: v for k, v in env.items() if k not in ("HOME", "USER")})
-
-        # CWD: user's home inside the overlay (chroot preserves CWD)
-        home_dir = f"{root}/home/{username}"
-        cwd = home_dir if os.path.isdir(home_dir) else root
-
-        # Exec user's login shell directly — no su wrapper.
-        # preexec_fn drops privileges after fork, before exec.
-        def _setup():
-            os.chroot(root)
-            # CWD is already the host-side home_dir; after chroot it becomes /home/user
-            os.setgroups([pw.pw_gid])
-            os.setgid(pw.pw_gid)
-            os.setuid(pw.pw_uid)
-
-        if args:
-            cmd = ["/bin/bash", "--login", "-c", shlex.join(args)]
-        else:
-            cmd = ["/bin/bash", "--login"]
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=full_env,
-            cwd=cwd,
-            preexec_fn=_setup,
-        )
-
-        fds = {proc.stdout: "stdout", proc.stderr: "stderr"}
-        remaining = set(fds.keys())
-
-        while remaining:
-            readable, _, _ = select.select(list(remaining), [], [], 0.1)
-            for fd in readable:
-                chunk = fd.read(4096)
-                if chunk:
-                    stream_name = fds[fd]
-                    yield {"stream": stream_name, "data": chunk.decode("utf-8", errors="replace")}
-                else:
-                    remaining.discard(fd)
-
-        proc.wait()
-        yield {"type": "done", "exit_code": proc.returncode}
 
     def _get_size(self, path):
         """Get human-readable size of a directory."""
