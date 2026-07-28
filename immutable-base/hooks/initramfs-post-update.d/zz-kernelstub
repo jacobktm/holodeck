@@ -1,18 +1,27 @@
 #!/bin/bash
 # Immutable-aware kernelstub wrapper for initramfs post-update.
-# ESP modifications require daemon authorization (immutable auth).
-# Without it, kernelstub is skipped and the user is told to authenticate.
+# Prompts for authorization if ESP hasn't been authorized yet.
 
 ESP_AUTH_MARKER="/run/immutable/esp-authorized"
 ESP_AUTH_TTL_MIN=10
 
-# Check if ESP is authorized: marker exists and is less than ESP_AUTH_TTL_MIN old
 check_esp_auth() {
     [ -f "$ESP_AUTH_MARKER" ] || return 1
     find "$ESP_AUTH_MARKER" -mmin -"$ESP_AUTH_TTL_MIN" -print -quit 2>/dev/null | grep -q .
 }
 
-# Detect chroot: compare root filesystem device/inode to /proc/1/root's
+ensure_esp_auth() {
+    if check_esp_auth; then
+        return 0
+    fi
+    echo "" >&2
+    echo "kernelstub: ESP authorization required to update boot entries." >&2
+    if command -v immutable >/dev/null 2>&1; then
+        immutable auth 2>&1 || true
+    fi
+    check_esp_auth
+}
+
 ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
 REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
 
@@ -23,11 +32,9 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
         exit 0
     fi
 
-    # Check if ESP is already writable (boot overlay case)
     if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
-        # Already writable — check authorization
-        if ! check_esp_auth; then
-            echo "kernelstub: ESP not authorized. Run 'immutable auth' first." >&2
+        if ! ensure_esp_auth; then
+            echo "kernelstub: skipping ESP update (auth declined or failed)" >&2
             exit 0
         fi
         KERNEL="/boot/vmlinuz-$1"
@@ -35,9 +42,8 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
         exec kernelstub --verbose --preserve-live-mode
     fi
 
-    # ESP is read-only — check authorization before trying to unlock
-    if ! check_esp_auth; then
-        echo "kernelstub: ESP not authorized. Run 'immutable auth' first." >&2
+    if ! ensure_esp_auth; then
+        echo "kernelstub: skipping ESP update (auth declined or failed)" >&2
         exit 0
     fi
 
@@ -49,13 +55,11 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
         exit 0
     fi
 
-    # Can't unlock — skip kernelstub silently
     exit 0
 fi
 
-# On the host: check authorization before running kernelstub
-if ! check_esp_auth; then
-    echo "kernelstub: ESP not authorized. Run 'immutable auth' first." >&2
+if ! ensure_esp_auth; then
+    echo "kernelstub: skipping ESP update (auth declined or failed)" >&2
     exit 0
 fi
 
