@@ -18,6 +18,9 @@ VERSION = "0.4.0"
 SOCKET_PATH = "/run/immutable/daemon.sock"
 
 
+AUTOSTART_COUNT = "/run/immutable/auto-start-count"
+
+
 def _start_daemon():
     """Try to start the daemon socket via systemctl (needs root)."""
     import subprocess
@@ -29,6 +32,16 @@ def _start_daemon():
         import time
         time.sleep(0.5)
     except Exception:
+        pass
+    # Track usage for boot-ordering visibility
+    try:
+        n = int(open(AUTOSTART_COUNT).read().strip()) + 1
+    except (FileNotFoundError, ValueError):
+        n = 1
+    try:
+        with open(AUTOSTART_COUNT, "w") as f:
+            f.write(str(n))
+    except OSError:
         pass
 
 
@@ -479,7 +492,20 @@ def main():
     elif cmd == "list-names":
         cmd_simple({"cmd": "list-names"})
     elif cmd == "status":
-        cmd_simple({"cmd": "status"})
+        result = send_command({"cmd": "status"})
+        if result.get("ok"):
+            output = result.get("output", "")
+            # Append auto-start metric if any fallbacks occurred this boot
+            try:
+                n = int(open(AUTOSTART_COUNT).read().strip())
+                if n > 0:
+                    output += f"\n\nAuto-start fallback used {n}x this boot"
+            except (FileNotFoundError, ValueError):
+                pass
+            print(output)
+        else:
+            print(f"ERROR: {result.get('error', 'Unknown error')}", file=sys.stderr)
+            sys.exit(1)
     elif cmd == "lock":
         cmd_simple({"cmd": "lock"})
     elif cmd == "unlock":
