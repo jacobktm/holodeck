@@ -16,5 +16,15 @@ fi
 test -x /usr/bin/bootctl || exit 0
 bootctl is-installed --quiet || exit 0
 
+# ESP is mounted readonly per fstab — remount rw for kernel-install
+ESP="/boot/efi"
+RO_WAS=""
+if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+    RO_WAS=1
+    mount -o remount,rw "$ESP" 2>/dev/null || exit 0
+fi
+
 echo "Installing kernel version $1 in systemd-boot..."
 kernel-install add "$1" "$2"
+
+[ -n "$RO_WAS" ] && mount -o remount,ro "$ESP" 2>/dev/null || true
