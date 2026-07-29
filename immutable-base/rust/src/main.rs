@@ -71,5 +71,11 @@ fn main() {
         Commands::Shell { name, args } => commands::cmd_shell(name, args),
         Commands::Run { name, args } => commands::cmd_run(name, args),
     };
-    std::process::exit(if result.is_ok() { 0 } else { 1 });
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
 }
