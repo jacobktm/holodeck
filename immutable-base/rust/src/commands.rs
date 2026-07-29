@@ -551,7 +551,9 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
         }
         cmd.arg("-u").arg(&cfg.username);
         if !args.is_empty() {
-            cmd.args(args);
+            cmd.arg("/bin/bash").arg("-c").arg(format!("cd ~ && {}", args.join(" ")));
+        } else {
+            cmd.arg("/bin/bash").arg("-c").arg("cd ~ && exec /bin/bash --login");
         }
         let status = cmd.status()
             .map_err(|e| format!("chroot exec failed: {e}"))?;
@@ -571,7 +573,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     };
 
     let shell_cmd = if args.is_empty() {
-        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash --login", cfg.username)
+        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash -c 'cd ~ && exec /bin/bash --login'", cfg.username)
     } else {
         let joined: Vec<String> = args.iter().map(|a| {
             if a.contains(' ') {
@@ -580,7 +582,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
                 a.clone()
             }
         }).collect();
-        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash --login -c {}", cfg.username, joined.join(" "))
+        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash --login -c 'cd ~ && {}'", cfg.username, joined.join(" "))
     };
 
     let status = std::process::Command::new("script")
