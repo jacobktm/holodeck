@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::fs;
 use crate::config::Config;
 
 pub fn set_active_overlay(cfg: &Config, name: &str) -> Result<(), String> {
@@ -130,6 +131,45 @@ pub fn esp_remount(mode: &str) -> Result<bool, String> {
         return Err(format!("Failed to remount ESP {mode}"));
     }
     Ok(was_ro)
+}
+
+pub fn validate_overlay_esp(overlay_root: &str, expected_subvol: &str) -> Result<(), String> {
+    let overlay_esp = format!("{overlay_root}/boot/efi");
+    let esp = Path::new(&overlay_esp);
+    if !esp.is_dir() {
+        return Err(format!("Overlay ESP directory not found: {overlay_esp}"));
+    }
+
+    // Check boot entry exists and has correct subvol
+    let conf_path = format!("{overlay_esp}/loader/entries/immutable.conf");
+    let content = fs::read_to_string(&conf_path)
+        .map_err(|e| format!("Cannot read {conf_path}: {e}"))?;
+
+    let has_subvol = content
+        .lines()
+        .any(|line| line.starts_with("options ") && line.contains(&format!("subvol={expected_subvol}")));
+    if !has_subvol {
+        return Err(format!(
+            "Boot entry {conf_path} does not point to {expected_subvol}. \
+             The overlay's ESP copy is misconfigured and cannot be safely activated."
+        ));
+    }
+
+    // Check kernel and initrd exist inside overlay's ESP copy
+    let found = find_esp_dir(&overlay_esp)
+        .ok_or_else(|| format!("Cannot find ESP kernel directory in {overlay_esp}"))?;
+
+    let kernel = format!("{found}/vmlinuz.efi");
+    let initrd = format!("{found}/initrd.img");
+
+    if !Path::new(&kernel).is_file() {
+        return Err(format!("Kernel not found at {kernel}"));
+    }
+    if !Path::new(&initrd).is_file() {
+        return Err(format!("Initrd not found at {initrd}"));
+    }
+
+    Ok(())
 }
 
 pub fn clean_boot_entries(cfg: &Config) -> Result<Vec<String>, String> {

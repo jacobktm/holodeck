@@ -240,6 +240,9 @@ pub fn cmd_switch(name: &str) -> Result<(), String> {
         return Err(format!("Overlay '{name}' not found"));
     }
 
+    // Validate new overlay's ESP BEFORE touching the real ESP
+    boot::validate_overlay_esp(&dst, &format!("@overlay-{name}"))?;
+
     let was_ro = boot::esp_remount("rw")?;
 
     let active = btrfs::get_active_subvol(&cfg)
@@ -389,6 +392,9 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("Failed to copy kernel: {e}"))?;
     std::fs::copy(&initrd_src, &cur_initrd)
         .map_err(|e| format!("Failed to copy initrd: {e}"))?;
+
+    // Validate overlay ESP BEFORE touching the real ESP
+    boot::validate_overlay_esp(&root, &active)?;
 
     // Sync overlay's ESP copy to the real ESP
     let was_ro = boot::esp_remount("rw")?;
