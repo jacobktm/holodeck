@@ -1,6 +1,6 @@
 #!/bin/bash
-# Immutable-aware kernelstub wrapper for kernel post-install.
-# Remounts ESP rw for kernelstub, then ro after.
+# Immutable-aware kernelstub replacement for kernel post-install.
+# Runs kernelstub on the host; copies files directly in chroot.
 # On the host, syncs the real ESP back to the overlay's ESP copy.
 
 sync_back_to_overlay() {
@@ -16,38 +16,84 @@ sync_back_to_overlay() {
     rsync -a --delete /boot/efi/ "$overlay_esp/" 2>/dev/null || true
 }
 
+read_kernelstub_config() {
+    local config_file="/etc/kernelstub/configuration"
+    if [ -f "$config_file" ]; then
+        python3 -c "
+import json, sys
+try:
+    with open('$config_file') as f:
+        cfg = json.load(f)
+    opts = cfg.get('user', cfg.get('default', {})).get('kernel_options', [])
+    print(' '.join(opts))
+except Exception:
+    sys.exit(1)
+" 2>/dev/null && return 0
+    fi
+    echo "quiet splash"
+}
+
+find_esp_dir() {
+    local esp_base="$1"
+    for d in "$esp_base"/EFI/Pop_OS-*; do
+        if [ -d "$d" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    if [ -d "$esp_base/EFI/systemd" ]; then
+        echo "$esp_base/EFI/systemd"
+        return 0
+    fi
+    return 1
+}
+
+# --- chroot detection ---
 ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
 REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
 
 if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
-    # Inside overlay shell (chroot) — copy kernel/initrd to overlay's ESP copy directly
+    # Inside overlay shell (chroot) — replicate kernelstub's ESP operations
     ESP="/boot/efi"
     if ! mountpoint -q "$ESP" 2>/dev/null; then
         exit 0
     fi
+
+    ESP_DIR=$(find_esp_dir "$ESP")
+    [ -n "$ESP_DIR" ] || exit 0
+
     KERNEL_SRC="$2"
     INITRD_SRC="/boot/initrd.img-$1"
-    # Find ESP kernel directory (Pop_OS-<UUID> or systemd)
-    ESP_DIR=""
-    for d in "$ESP"/EFI/Pop_OS-*; do
-        if [ -d "$d" ]; then
-            ESP_DIR="$d"
-            break
-        fi
-    done
-    if [ -z "$ESP_DIR" ] && [ -d "$ESP/EFI/systemd" ]; then
-        ESP_DIR="$ESP/EFI/systemd"
+    [ -f "$KERNEL_SRC" ] || exit 0
+    [ -f "$INITRD_SRC" ] || exit 0
+
+    # Save previous kernel/initrd BEFORE overwriting (kernelstub's backup_old)
+    if [ -f "${ESP_DIR}/vmlinuz.efi" ]; then
+        rm -f "${ESP_DIR}/vmlinuz-previous.efi" 2>/dev/null || true
+        cp "${ESP_DIR}/vmlinuz.efi" "${ESP_DIR}/vmlinuz-previous.efi" 2>/dev/null || true
     fi
-    if [ -n "$ESP_DIR" ] && [ -f "$KERNEL_SRC" ] && [ -f "$INITRD_SRC" ]; then
-        # Save previous kernel/initrd
-        [ -f "$ESP_DIR/vmlinuz.efi" ] && cp "$ESP_DIR/vmlinuz.efi" "$ESP_DIR/vmlinuz-previous.efi" 2>/dev/null || true
-        [ -f "$ESP_DIR/initrd.img" ] && cp "$ESP_DIR/initrd.img" "$ESP_DIR/initrd.img-previous" 2>/dev/null || true
-        cp "$KERNEL_SRC" "$ESP_DIR/vmlinuz.efi" 2>/dev/null || true
-        cp "$INITRD_SRC" "$ESP_DIR/initrd.img" 2>/dev/null || true
+    if [ -f "${ESP_DIR}/initrd.img" ]; then
+        rm -f "${ESP_DIR}/initrd.img-previous" 2>/dev/null || true
+        cp "${ESP_DIR}/initrd.img" "${ESP_DIR}/initrd.img-previous" 2>/dev/null || true
     fi
+
+    # Copy new kernel (decompress if gzip'd, matching kernelstub behavior)
+    if [ "$(xxd -l 2 -p "$KERNEL_SRC" 2>/dev/null)" = "1f8b" ]; then
+        gunzip -c "$KERNEL_SRC" > "${ESP_DIR}/vmlinuz.efi" 2>/dev/null || \
+        cp "$KERNEL_SRC" "${ESP_DIR}/vmlinuz.efi" 2>/dev/null || true
+    else
+        cp "$KERNEL_SRC" "${ESP_DIR}/vmlinuz.efi" 2>/dev/null || true
+    fi
+
+    cp "$INITRD_SRC" "${ESP_DIR}/initrd.img" 2>/dev/null || true
+
+    # Copy /proc/cmdline to ESP (kernelstub does this for debug/info)
+    cp /proc/cmdline "${ESP_DIR}/cmdline" 2>/dev/null || true
+
     exit 0
 fi
 
+# --- host path ---
 ESP="/boot/efi"
 
 RO_WAS=""
