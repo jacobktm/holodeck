@@ -1,8 +1,9 @@
 [Unit]
-Description=Immutable boot counter — check for failed boots
+Description=Immutable boot counter — auto-rollback on repeated boot failures
 DefaultDependencies=no
-After=local-fs.target
-Before=immutable-healthcheck.service
+After=local-fs.target immutable-data-mount.service
+Before=multi-user.target immutable-healthcheck.service
+RequiresMountsFor=/pool
 
 [Service]
 Type=oneshot

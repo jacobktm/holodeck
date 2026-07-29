@@ -1,6 +1,6 @@
 [Unit]
-Description=Immutable boot healthcheck — mark boot as healthy
-After=multi-user.target
+Description=Immutable boot healthcheck — resets boot counter after successful boot
+After=multi-user.target immutable-data-mount.service
 Requires=multi-user.target
 
 [Service]

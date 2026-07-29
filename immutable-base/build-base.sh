@@ -302,6 +302,12 @@ install_base_packages() {
     # Install reinstall script to protected location
     install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
         "$ROOTFS_DIR/usr/lib/immutable/hooks/immutable-hook-reinstall"
+
+    # Install boot counter and healthcheck (fallback copies — @data bind-mount overrides)
+    install -Dm755 "$HOOKS_SRC/../immutable-boot-counter.sh" \
+        "$ROOTFS_DIR/usr/lib/immutable/immutable-boot-counter.sh"
+    install -Dm755 "$HOOKS_SRC/../immutable-healthcheck.sh" \
+        "$ROOTFS_DIR/usr/lib/immutable/immutable-healthcheck.sh"
 }
 
 package_rootfs() {

@@ -472,11 +472,17 @@ install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
 install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
     "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
 
-# Boot recovery scripts in @data
-cp "$(dirname "$0")/immutable-boot-counter.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
-chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
-cp "$(dirname "$0")/immutable-healthcheck.sh" "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
-chmod +x "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
+# Boot recovery scripts in @data (shared, overridable)
+install -Dm755 "$(dirname "$0")/immutable-boot-counter.sh" \
+    "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
+install -Dm755 "$(dirname "$0")/immutable-healthcheck.sh" \
+    "$MOUNT_POINT/pool/@data/immutable/immutable-healthcheck.sh"
+
+# Also install to @base as boot-time fallback (before @data bind-mount is ready)
+install -Dm755 "$(dirname "$0")/immutable-boot-counter.sh" \
+    "$MOUNT_POINT/usr/lib/immutable/immutable-boot-counter.sh"
+install -Dm755 "$(dirname "$0")/immutable-healthcheck.sh" \
+    "$MOUNT_POINT/usr/lib/immutable/immutable-healthcheck.sh"
 
 # ── Bind mount service: makes @data available at standard paths ──
 

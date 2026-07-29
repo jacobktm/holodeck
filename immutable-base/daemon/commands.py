@@ -201,6 +201,28 @@ class CommandHandler:
         lines = ["=== Immutable Status ===", ""]
         lines.extend(self.boot.show_config())
         lines.append("")
+
+        # Show boot health
+        counter_path = f"{POOL}/{DATA_SUBVOL}/boot-counter"
+        try:
+            count = int(Path(counter_path).read_text().strip())
+            if count > 0:
+                lines.append(f"Boot health: {count} consecutive boot(s) since last successful boot")
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+
+        # Show rollback message if present
+        msg_path = f"{POOL}/{DATA_SUBVOL}/rollback-message"
+        try:
+            msg_content = Path(msg_path).read_text().strip()
+            if msg_content:
+                lines.append("")
+                lines.append("=== Rollback Alert ===")
+                lines.append(msg_content)
+        except (FileNotFoundError, OSError):
+            pass
+
+        lines.append("")
         lines.append("=== Subvolumes ===")
         for sv in self.btrfs.list_subvolumes(POOL):
             lines.append(f"  {sv}")
@@ -321,6 +343,11 @@ class CommandHandler:
             return {"ok": False, "error": "Missing 'name' field"}
 
         self._ensure_pool()
+
+        # Clear any stale rollback message — user is deliberately switching
+        msg_path = f"{POOL}/{DATA_SUBVOL}/rollback-message"
+        if os.path.exists(msg_path):
+            os.unlink(msg_path)
 
         was_ro = self.chroot.esp_remount("rw")
         try:

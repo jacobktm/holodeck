@@ -53,6 +53,28 @@ pub fn cmd_status() -> Result<(), String> {
     println!("Active:   {active_name}");
     println!();
 
+    // Show boot health
+    let counter_path = format!("{}/@data/boot-counter", cfg.pool);
+    if let Ok(content) = std::fs::read_to_string(&counter_path) {
+        if let Ok(count) = content.trim().parse::<u32>() {
+            if count > 0 {
+                println!("Health:   {} consecutive boot(s) since last successful boot", count);
+                println!();
+            }
+        }
+    }
+
+    // Show rollback message if present
+    let msg_path = format!("{}/@data/rollback-message", cfg.pool);
+    if let Ok(msg) = std::fs::read_to_string(&msg_path) {
+        let msg = msg.trim();
+        if !msg.is_empty() {
+            println!("=== Rollback Alert ===");
+            println!("{}", msg);
+            println!();
+        }
+    }
+
     println!("Overlays:");
     let overlays = btrfs::list_overlays(&cfg)?;
     for ov in &overlays {
@@ -177,6 +199,10 @@ pub fn cmd_reset(name: &str) -> Result<(), String> {
 pub fn cmd_switch(name: &str) -> Result<(), String> {
     let cfg = cfg();
     ensure_pool(&cfg)?;
+
+    // Clear any stale rollback message — user is deliberately switching
+    let msg_path = format!("{}/@data/rollback-message", cfg.pool);
+    let _ = std::fs::remove_file(&msg_path);
 
     let dst = cfg.overlay_path(name);
     if !Path::new(&dst).exists() {
@@ -344,7 +370,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     if !std::io::stdin().is_terminal() {
         // Non-interactive: just exec via chroot
         let mut cmd = std::process::Command::new("chroot");
-        cmd.arg(&root).arg("sudo").arg("-u").arg("user");
+        cmd.arg(&root).arg("sudo").arg("-u").arg(&cfg.username);
         if !args.is_empty() {
             cmd.args(args);
         }
@@ -360,7 +386,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     // Interactive: allocate PTY and fork
     // Use script(1) to allocate a PTY for the chroot
     let shell_cmd = if args.is_empty() {
-        format!("chroot {root} sudo -u user /bin/bash --login")
+        format!("chroot {root} sudo -u {} /bin/bash --login", cfg.username)
     } else {
         let joined: Vec<String> = args.iter().map(|a| {
             if a.contains(' ') {
@@ -369,7 +395,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
                 a.clone()
             }
         }).collect();
-        format!("chroot {root} sudo -u user /bin/bash --login -c {}", joined.join(" "))
+        format!("chroot {root} sudo -u {} /bin/bash --login -c {}", cfg.username, joined.join(" "))
     };
 
     let status = std::process::Command::new("script")
