@@ -36,7 +36,7 @@ impl MountGuard {
     }
 }
 
-pub fn mount_chroot(root: &str, overlay_esp: bool) -> Result<MountContext, String> {
+pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
     let mut ctx = MountContext {
         root: root.to_string(),
         mounts: Vec::new(),
@@ -66,35 +66,32 @@ pub fn mount_chroot(root: &str, overlay_esp: bool) -> Result<MountContext, Strin
         }
     }
 
-    // ESP: mount overlay's own copy or real ESP
-    let esp_src = if overlay_esp {
-        let candidate = format!("{root}/boot/efi");
-        if std::path::Path::new(&format!("{candidate}/loader/entries/immutable.conf")).exists() {
-            candidate
-        } else {
-            "/boot/efi".to_string()
-        }
-    } else {
-        "/boot/efi".to_string()
-    };
-    let esp_target = format!("{root}/boot/efi");
-    if !std::path::Path::new(&esp_target).exists() {
-        std::fs::create_dir_all(&esp_target)
-            .map_err(|e| format!("Failed to create {esp_target}: {e}"))?;
-    }
-    let status = Command::new("mount")
-        .args(["--bind", &esp_src, &esp_target])
-        .status()
-        .map_err(|e| format!("mount --bind {esp_src} failed: {e}"))?;
-    if status.success() {
-        ctx.mounts.push(esp_target);
-    }
-
     // Copy resolv.conf for DNS inside chroot
     let resolv_dst = format!("{root}/etc/resolv.conf");
     let _ = std::fs::copy("/etc/resolv.conf", &resolv_dst);
 
     Ok(ctx)
+}
+
+/// Bind-mount an overlay's own /boot/efi into the chroot.
+/// The mount is tracked in ctx for cleanup on drop.
+pub fn mount_overlay_esp(ctx: &mut MountContext, overlay_root: &str) -> Result<(), String> {
+    let esp_src = format!("{overlay_root}/boot/efi");
+    let esp_target = format!("{}/boot/efi", ctx.root);
+    if !std::path::Path::new(&esp_src).is_dir() {
+        return Err("Overlay has no /boot/efi directory".to_string());
+    }
+    std::fs::create_dir_all(&esp_target)
+        .map_err(|e| format!("Failed to create {esp_target}: {e}"))?;
+    let status = Command::new("mount")
+        .args(["--bind", &esp_src, &esp_target])
+        .status()
+        .map_err(|e| format!("mount --bind {esp_src} failed: {e}"))?;
+    if !status.success() {
+        return Err("Failed to bind-mount overlay ESP".to_string());
+    }
+    ctx.mounts.push(esp_target);
+    Ok(())
 }
 
 pub fn unmount_chroot(ctx: &MountContext) {

@@ -100,7 +100,7 @@ pub fn cmd_status() -> Result<(), String> {
 }
 
 pub fn cmd_create(name: &str, from: Option<&str>) -> Result<(), String> {
-    if name == "base" || SYSTEM_OVERLAYS.contains(&name) {
+    if !is_valid_overlay_name(name) || SYSTEM_OVERLAYS.contains(&name) {
         return Err(format!("Cannot create overlay '{name}': name is reserved"));
     }
 
@@ -143,6 +143,10 @@ pub fn cmd_create(name: &str, from: Option<&str>) -> Result<(), String> {
     println!("Created overlay '{name}' from {src}");
     println!("{dst}");
     Ok(())
+}
+
+fn is_valid_overlay_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('@') && name != "base" && name != "data"
 }
 
 fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &config::Config) {
@@ -222,6 +226,10 @@ pub fn cmd_delete(name: &str) -> Result<(), String> {
 }
 
 pub fn cmd_reset(name: &str) -> Result<(), String> {
+    if !is_valid_overlay_name(name) {
+        return Err(format!("Cannot reset '{name}': name is reserved"));
+    }
+
     let cfg = cfg();
     ensure_pool(&cfg)?;
 
@@ -281,6 +289,10 @@ pub fn cmd_switch(name: &str) -> Result<(), String> {
     // Clear any stale rollback message — user is deliberately switching
     let msg_path = format!("{}/@data/rollback-message", cfg.pool);
     let _ = std::fs::remove_file(&msg_path);
+
+    if !is_valid_overlay_name(name) {
+        return Err(format!("Cannot switch to '{name}': name is reserved"));
+    }
 
     let dst = cfg.overlay_path(name);
     if !Path::new(&dst).exists() {
@@ -383,8 +395,8 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
         return Err(format!("Active overlay not found: {active}"));
     }
 
-    // Mount chroot with real ESP (guard ensures cleanup on all paths)
-    let ctx = mount::mount_chroot(&root, false)?;
+    // Mount chroot (no ESP bind mount — overlay's own /boot/efi is accessible directly)
+    let ctx = mount::mount_chroot(&root)?;
     let _guard = mount::MountGuard::new(ctx);
 
     // Run update-initramfs inside chroot
@@ -521,8 +533,9 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
 
     use std::io::IsTerminal;
 
-    // Mount chroot with overlay's own ESP copy (guard ensures cleanup on all paths)
-    let ctx = mount::mount_chroot(&root, true)?;
+    // Mount chroot then bind-mount overlay's own ESP copy (guard ensures cleanup on all paths)
+    let mut ctx = mount::mount_chroot(&root)?;
+    let _ = mount::mount_overlay_esp(&mut ctx, &root);
     let _guard = mount::MountGuard::new(ctx);
 
     let envs = forwarded_env_vars();
