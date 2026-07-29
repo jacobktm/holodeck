@@ -595,3 +595,18 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
 pub fn cmd_run(name: &str, args: &[String]) -> Result<(), String> {
     cmd_shell(name, args)
 }
+
+pub fn cmd_ensure() -> Result<(), String> {
+    let reinstall_script = "/usr/lib/immutable/hooks/immutable-hook-reinstall";
+    if !Path::new(reinstall_script).is_file() {
+        return Err("Reinstall hook not found at /usr/lib/immutable/hooks/immutable-hook-reinstall".to_string());
+    }
+    let status = std::process::Command::new(reinstall_script)
+        .status()
+        .map_err(|e| format!("Failed to execute reinstall hook: {e}"))?;
+    if !status.success() {
+        return Err("Hook reinstall exited with error".to_string());
+    }
+    println!("Immutable system files are up to date.");
+    Ok(())
+}

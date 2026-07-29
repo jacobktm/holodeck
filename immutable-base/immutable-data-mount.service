@@ -1,0 +1,21 @@
+[Unit]
+Description=Overlay immutable data from @data on top of system defaults
+Documentation=https://github.com/jacobktm/holodeck
+After=local-fs.target systemd-remount-fs.service
+Before=immutable-boot-counter.service immutable-healthcheck.service
+RequiresMountsFor=/pool
+ConditionPathExists=/pool/@data/immutable
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p /pool/@data/.immutable-work
+ExecStart=/bin/mount -t overlay overlay \
+    -o lowerdir=/usr/lib/immutable,upperdir=/pool/@data/immutable,workdir=/pool/@data/.immutable-work \
+    /usr/lib/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/bin/immutable /usr/local/bin/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/bash-completion/immutable /usr/share/bash-completion/completions/immutable
+ExecStart=/bin/mount --bind /pool/@data/immutable/man/immutable.1.gz /usr/share/man/man1/immutable.1.gz
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -458,13 +458,24 @@ install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
     "$MOUNT_POINT/etc/dpkg/dpkg.cfg.d/99-immutable"
 install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
     "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
+# Source copy for reinstall hook to propagate
+install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
+    "$MOUNT_POINT/usr/lib/immutable/immutable-hooks-apt-hook"
 
 # Apt proxy auto-detect script + config
+# Install to hooks source dir so reinstall can re-provision
+install -Dm755 "$HOOKS_SRC/apt-proxy-detect" \
+    "$MOUNT_POINT/usr/lib/immutable/hooks/apt-proxy-detect"
+install -Dm755 "$HOOKS_SRC/apt-proxy-detect.sh" \
+    "$MOUNT_POINT/usr/lib/immutable/hooks/apt-proxy-detect.sh"
+# Install to runtime location as well
+install -Dm755 "$HOOKS_SRC/apt-proxy-detect" \
+    "$MOUNT_POINT/usr/lib/immutable/apt-proxy-detect"
 install -Dm755 "$HOOKS_SRC/apt-proxy-detect.sh" \
     "$MOUNT_POINT/usr/lib/immutable/apt-proxy-detect.sh"
 install -Dm644 /dev/stdin \
     "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-proxy" <<'APT'
-Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect.sh";
+Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect";
 APT
 
 # Boot recovery scripts in @data (shared, overridable)
@@ -481,25 +492,10 @@ install -Dm755 "$(dirname "$0")/immutable-healthcheck.sh" \
 
 # ── Bind mount service: makes @data available at standard paths ──
 
-cat > "$MOUNT_POINT/etc/systemd/system/immutable-data-mount.service" <<'UNIT'
-[Unit]
-Description=Bind-mount immutable data from @data
-After=local-fs.target systemd-remount-fs.service
-Before=immutable-boot-counter.service immutable-healthcheck.service
-RequiresMountsFor=/pool
-ConditionPathExists=/pool/@data/immutable
-
-[Service]
-Type=oneshot
-ExecStart=/bin/mount --bind /pool/@data/immutable /usr/lib/immutable
-ExecStart=/bin/mount --bind /pool/@data/immutable/bin/immutable /usr/local/bin/immutable
-ExecStart=/bin/mount --bind /pool/@data/immutable/bash-completion/immutable /usr/share/bash-completion/completions/immutable
-ExecStart=/bin/mount --bind /pool/@data/immutable/man/immutable.1.gz /usr/share/man/man1/immutable.1.gz
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+install -Dm644 "$HOOKS_SRC/../immutable-data-mount.service" \
+    "$MOUNT_POINT/usr/lib/immutable/immutable-data-mount.service"
+install -Dm644 "$HOOKS_SRC/../immutable-data-mount.service" \
+    "$MOUNT_POINT/etc/systemd/system/immutable-data-mount.service"
 
 # ── System services ──
 

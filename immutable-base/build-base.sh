@@ -298,10 +298,17 @@ install_base_packages() {
     # Install dpkg hook — reinstalls our hooks after dpkg invocations in overlay chroots
     install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
         "$ROOTFS_DIR/etc/apt/apt.conf.d/99-immutable-hooks"
+    # Also keep source copy for reinstall hook to propagate
+    install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
+        "$ROOTFS_DIR/usr/lib/immutable/immutable-hooks-apt-hook"
 
     # Install reinstall script to protected location
     install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
         "$ROOTFS_DIR/usr/lib/immutable/hooks/immutable-hook-reinstall"
+
+    # Install systemd service unit for reinstall hook propagation
+    install -Dm644 "$HOOKS_SRC/../immutable-data-mount.service" \
+        "$ROOTFS_DIR/usr/lib/immutable/immutable-data-mount.service"
 
     # Install boot counter and healthcheck (fallback copies — @data bind-mount overrides)
     install -Dm755 "$HOOKS_SRC/../immutable-boot-counter.sh" \
@@ -310,11 +317,19 @@ install_base_packages() {
         "$ROOTFS_DIR/usr/lib/immutable/immutable-healthcheck.sh"
 
     # Apt proxy auto-detect — dynamic probe at apt runtime
+    # Install to hooks source dir so reinstall can re-provision
+    install -Dm755 "$HOOKS_SRC/apt-proxy-detect" \
+        "$ROOTFS_DIR/usr/lib/immutable/hooks/apt-proxy-detect"
+    install -Dm755 "$HOOKS_SRC/apt-proxy-detect.sh" \
+        "$ROOTFS_DIR/usr/lib/immutable/hooks/apt-proxy-detect.sh"
+    # Install to runtime location as well
+    install -Dm755 "$HOOKS_SRC/apt-proxy-detect" \
+        "$ROOTFS_DIR/usr/lib/immutable/apt-proxy-detect"
     install -Dm755 "$HOOKS_SRC/apt-proxy-detect.sh" \
         "$ROOTFS_DIR/usr/lib/immutable/apt-proxy-detect.sh"
     mkdir -p "$ROOTFS_DIR/etc/apt/apt.conf.d"
     cat > "$ROOTFS_DIR/etc/apt/apt.conf.d/99-immutable-proxy" <<'APT'
-Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect.sh";
+Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect";
 APT
 
     # Remove temporary build proxy — installed system uses auto-detect

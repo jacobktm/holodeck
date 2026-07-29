@@ -1,0 +1,8 @@
+#!/bin/bash
+# Stable apt proxy auto-detect entry point.
+# Falls back to DIRECT if the real detection script is missing.
+REAL="/usr/lib/immutable/apt-proxy-detect.sh"
+if [ -x "$REAL" ]; then
+    exec "$REAL" "$@"
+fi
+echo "DIRECT"

@@ -1,11 +1,18 @@
 #!/bin/bash
-# Reinstall immutable-aware kernelstub hooks after package updates.
-# Triggered by dpkg whenever kernelstub or systemd-boot is installed/updated.
-# Stock hooks are replaced by our wrappers that detect chroot and skip.
+# Reinstall immutable system files after package updates.
+# Triggered by dpkg post-invoke. Handles:
+#   - kernel/initramfs hooks (zz-kernelstub, zz-systemd-boot)
+#   - apt proxy auto-detect script and config
+#   - dpkg configuration for force-confold
+#   - apt hook config for future reinstall triggers
 
 set -euo pipefail
 
-HOOKS_SRC="/usr/lib/immutable/hooks"
+IMMUTABLE_DIR="/usr/lib/immutable"
+HOOKS_SRC="$IMMUTABLE_DIR/hooks"
+
+# ---- Kernel / initramfs hooks ----
+
 [ -d "$HOOKS_SRC" ] || exit 0
 
 for dir in kernel-postinst.d initramfs-post-update.d; do
@@ -17,3 +24,38 @@ for dir in kernel-postinst.d initramfs-post-update.d; do
         install -Dm755 "$hook" "$target"
     done
 done
+
+# ---- Apt proxy auto-detect ----
+# Copy source files from hooks dir to runtime location
+for f in apt-proxy-detect apt-proxy-detect.sh; do
+    if [ -f "$HOOKS_SRC/$f" ]; then
+        install -Dm755 "$HOOKS_SRC/$f" "$IMMUTABLE_DIR/$f"
+    fi
+done
+# Apt config referencing the wrapper
+mkdir -p /etc/apt/apt.conf.d
+cat > /etc/apt/apt.conf.d/99-immutable-proxy <<'APT'
+Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect";
+APT
+
+# ---- Dpkg config: force-keep our conffiles ----
+
+mkdir -p /etc/dpkg/dpkg.cfg.d
+echo "force-confold" > /etc/dpkg/dpkg.cfg.d/99-immutable
+
+# ---- Apt hook config (self-referential — ensures hook reinstall persists) ----
+
+if [ -f "$HOOKS_SRC/../immutable-hooks-apt-hook" ]; then
+    install -Dm644 "$HOOKS_SRC/../immutable-hooks-apt-hook" \
+        /etc/apt/apt.conf.d/99-immutable-hooks
+fi
+
+# ---- Systemd service unit ----
+# Install the @data overlayfs service so future boots use overlayfs instead
+# of bind-mount (which hides overlay files missing from @data).
+
+if [ -f "$HOOKS_SRC/../immutable-data-mount.service" ]; then
+    install -Dm644 "$HOOKS_SRC/../immutable-data-mount.service" \
+        /etc/systemd/system/immutable-data-mount.service
+    systemctl daemon-reload 2>/dev/null || true
+fi

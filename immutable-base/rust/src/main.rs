@@ -51,6 +51,8 @@ enum Commands {
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Ensure all immutable system files are installed and up to date
+    Ensure,
 }
 
 fn main() {
@@ -70,6 +72,7 @@ fn main() {
         Commands::UpdateInitramfs { args } => commands::cmd_update_initramfs(args),
         Commands::Shell { name, args } => commands::cmd_shell(name, args),
         Commands::Run { name, args } => commands::cmd_run(name, args),
+        Commands::Ensure => commands::cmd_ensure(),
     };
     match result {
         Ok(()) => std::process::exit(0),
