@@ -135,9 +135,41 @@ pub fn cmd_create(name: &str, from: Option<&str>) -> Result<(), String> {
     }
 
     btrfs::snapshot(&src, &dst)?;
+
+    // Customize overlay's ESP immutable.conf to point to the new subvol
+    let new_subvol = format!("@overlay-{name}");
+    customize_overlay_esp(&dst, &new_subvol);
+
     println!("Created overlay '{name}' from {src}");
     println!("{dst}");
     Ok(())
+}
+
+fn customize_overlay_esp(overlay_root: &str, subvol: &str) {
+    let conf_path = format!("{overlay_root}/boot/efi/loader/entries/immutable.conf");
+    let content = match std::fs::read_to_string(&conf_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let updated: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if line.starts_with("options ") && line.contains("subvol=") {
+                // Replace subvol=@overlay-<whatever> with subvol=<subvol>
+                if let Some(start) = line.find("subvol=") {
+                    let before = &line[..start];
+                    let after = line[start..].split_whitespace().nth(0).unwrap_or("");
+                    let rest = &line[start + after.len()..];
+                    format!("{before}subvol={subvol}{rest}")
+                } else {
+                    line.to_string()
+                }
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    let _ = std::fs::write(&conf_path, updated.join("\n") + "\n");
 }
 
 pub fn cmd_delete(name: &str) -> Result<(), String> {
