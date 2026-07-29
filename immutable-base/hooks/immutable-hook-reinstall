@@ -50,6 +50,14 @@ if [ -f "$HOOKS_SRC/../immutable-hooks-apt-hook" ]; then
         /etc/apt/apt.conf.d/99-immutable-hooks
 fi
 
+# ---- Bash prompt overlay indicator ----
+# Show current overlay name in bash prompt for both host and chroot sessions.
+
+if [ -f "$HOOKS_SRC/../immutable-prompt.sh" ]; then
+    install -Dm644 "$HOOKS_SRC/../immutable-prompt.sh" \
+        /etc/profile.d/immutable-prompt.sh
+fi
+
 # ---- Systemd service unit ----
 # Install the @data overlayfs service so future boots use overlayfs instead
 # of bind-mount (which hides overlay files missing from @data).

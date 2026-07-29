@@ -538,7 +538,9 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     let _ = mount::mount_overlay_esp(&mut ctx, &root);
     let _guard = mount::MountGuard::new(ctx);
 
-    let envs = forwarded_env_vars();
+    let mut envs = forwarded_env_vars();
+    let overlay_name = name.strip_prefix("@overlay-").unwrap_or(name);
+    envs.push(("IMMUTABLE_OVERLAY".to_string(), overlay_name.to_string()));
 
     if !std::io::stdin().is_terminal() {
         // Non-interactive: pass env vars through sudo's KEY=val syntax

@@ -302,6 +302,10 @@ install_base_packages() {
     install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
         "$ROOTFS_DIR/usr/lib/immutable/immutable-hooks-apt-hook"
 
+    # Bash prompt overlay indicator
+    install -Dm644 "$HOOKS_SRC/../immutable-prompt.sh" \
+        "$ROOTFS_DIR/etc/profile.d/immutable-prompt.sh"
+
     # Install reinstall script to protected location
     install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
         "$ROOTFS_DIR/usr/lib/immutable/hooks/immutable-hook-reinstall"

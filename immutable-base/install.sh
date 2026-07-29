@@ -478,6 +478,10 @@ install -Dm644 /dev/stdin \
 Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect";
 APT
 
+# Bash prompt overlay indicator
+install -Dm644 "$HOOKS_SRC/../immutable-prompt.sh" \
+    "$MOUNT_POINT/etc/profile.d/immutable-prompt.sh"
+
 # Boot recovery scripts in @data (shared, overridable)
 install -Dm755 "$(dirname "$0")/immutable-boot-counter.sh" \
     "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"
