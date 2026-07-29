@@ -388,7 +388,7 @@ fi
 echo "Boot entries:"
 ls -la "$MOUNT_POINT/boot/efi/loader/entries/" 2>/dev/null || true
 
-# ── Mount pool to access @data for daemon/CLI installation ──
+# ── Mount pool to access @data for CLI installation ──
 
 mkdir -p "$MOUNT_POINT/pool"
 mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
@@ -417,12 +417,6 @@ gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/pool/@data/immutable/man/i
 # Also install directly to @base
 mkdir -p "$MOUNT_POINT/usr/share/man/man1"
 gzip -c "$(dirname "$0")/immutable.1" > "$MOUNT_POINT/usr/share/man/man1/immutable.1.gz"
-
-# ── Install immutable daemon to @data (shared across all overlays) ──
-
-mkdir -p "$MOUNT_POINT/pool/@data/immutable/daemon"
-cp "$(dirname "$0")/daemon/"*.py "$MOUNT_POINT/pool/@data/immutable/daemon/"
-touch "$MOUNT_POINT/pool/@data/immutable/daemon/__init__.py"
 
 # ── Install hooks to @data (protected source for overlay reinstalls) ──
 
@@ -479,7 +473,7 @@ cat > "$MOUNT_POINT/etc/systemd/system/immutable-data-mount.service" <<'UNIT'
 [Unit]
 Description=Bind-mount immutable data from @data
 After=local-fs.target systemd-remount-fs.service
-Before=sockets.target immutable-daemon.socket immutable-boot-counter.service immutable-healthcheck.service
+Before=immutable-boot-counter.service immutable-healthcheck.service
 RequiresMountsFor=/pool
 ConditionPathExists=/pool/@data/immutable
 
@@ -495,23 +489,13 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
-# ── Daemon and system services ──
+# ── System services ──
 
-chroot "$MOUNT_POINT" groupadd immutable 2>/dev/null || true
-chroot "$MOUNT_POINT" usermod -aG immutable USERNAME2>/dev/null || true
-
-cp "$(dirname "$0")/immutable-daemon.service" "$MOUNT_POINT/etc/systemd/system/"
-cp "$(dirname "$0")/immutable-daemon.socket" "$MOUNT_POINT/etc/systemd/system/"
-
-cp "$(dirname "$0")/tmpfiles-immutable.conf" "$MOUNT_POINT/etc/tmpfiles.d/immutable.conf"
-mkdir -p "$MOUNT_POINT/run/immutable"
-
-# Fix devpts ptmx permissions
+# Fix devpts ptmx permissions (needed by Rust CLI's script(1) PTY allocation)
 cat > "$MOUNT_POINT/etc/systemd/system/fix-devpts.service" <<'UNIT'
 [Unit]
 Description=Fix devpts ptmxmode for PTY allocation
 After=systemd-udevd.service
-Before=immutable-daemon.socket
 
 [Service]
 Type=oneshot
@@ -528,15 +512,12 @@ cp "$(dirname "$0")/immutable-healthcheck.service" "$MOUNT_POINT/etc/systemd/sys
 # ── Enable systemd units (manual symlinks — systemctl enable fails in chroot) ──
 
 mkdir -p "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants"
-mkdir -p "$MOUNT_POINT/etc/systemd/system/sockets.target.wants"
 mkdir -p "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants"
 
 ln -sf /etc/systemd/system/immutable-data-mount.service \
     "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/immutable-data-mount.service"
 ln -sf /etc/systemd/system/immutable-data-mount.service \
     "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants/immutable-data-mount.service"
-ln -sf /etc/systemd/system/immutable-daemon.socket \
-    "$MOUNT_POINT/etc/systemd/system/sockets.target.wants/immutable-daemon.socket"
 ln -sf /etc/systemd/system/fix-devpts.service \
     "$MOUNT_POINT/etc/systemd/system/sysinit.target.wants/fix-devpts.service"
 ln -sf /etc/systemd/system/immutable-boot-counter.service \
@@ -544,7 +525,7 @@ ln -sf /etc/systemd/system/immutable-boot-counter.service \
 ln -sf /etc/systemd/system/immutable-healthcheck.service \
     "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/immutable-healthcheck.service"
 
-echo "Installed immutable daemon and services"
+echo "Installed immutable CLI and system services"
 
 # ── Unmount chroot ──
 

@@ -177,145 +177,24 @@ else
     log_fail "immutable CLI not found"
 fi
 
-# ── Daemon diagnostics ──
+# ── CLI diagnostics ──
 
 echo ""
-echo "=== Daemon Diagnostics ==="
+echo "=== CLI Diagnostics ==="
 
-# Check daemon modules installed (via @data bind mount)
-if [ -f /usr/lib/immutable/daemon/daemon.py ] || [ -f /usr/lib/immutable/daemon.py ]; then
-    log_pass "Daemon modules installed at /usr/lib/immutable/"
-else
-    log_fail "Daemon modules not found at /usr/lib/immutable/"
-fi
+IMMUTABLE_BIN="$(which immutable 2>/dev/null || true)"
+if [ -n "$IMMUTABLE_BIN" ]; then
+    log_pass "immutable CLI found at $IMMUTABLE_BIN"
 
-# Check systemd units
-if [ -f /etc/systemd/system/immutable-daemon.service ]; then
-    log_pass "immutable-daemon.service installed"
-else
-    log_fail "immutable-daemon.service not found"
-fi
-
-if [ -f /etc/systemd/system/immutable-daemon.socket ]; then
-    log_pass "immutable-daemon.socket installed"
-else
-    log_fail "immutable-daemon.socket not found"
-fi
-
-# Check immutable group
-if getent group immutable >/dev/null 2>&1; then
-    log_pass "Group 'immutable' exists"
-    if id -nG USERNAME2>/dev/null | grep -qw immutable; then
-        log_pass "User 'USERNAME' is in 'immutable' group"
+    # Verify it's an ELF binary (Rust), not a Python script
+    if file "$IMMUTABLE_BIN" 2>/dev/null | grep -q "ELF"; then
+        log_pass "immutable CLI is a compiled binary (Rust)"
+        log_pass "$(sudo immutable --version 2>&1 || true)"
     else
-        log_fail "User 'USERNAME' NOT in 'immutable' group"
+        log_skip "immutable CLI is a script, not the Rust binary"
     fi
 else
-    log_fail "Group 'immutable' not found"
-fi
-
-# Check socket enabled
-if systemctl is-enabled immutable-daemon.socket >/dev/null 2>&1; then
-    log_pass "immutable-daemon.socket is enabled"
-else
-    log_fail "immutable-daemon.socket is NOT enabled"
-fi
-
-# Check socket running
-if systemctl is-active immutable-daemon.socket >/dev/null 2>&1; then
-    log_pass "immutable-daemon.socket is active"
-else
-    log_fail "immutable-daemon.socket is NOT active"
-fi
-
-# Check service running
-if systemctl is-active immutable-daemon.service >/dev/null 2>&1; then
-    log_pass "immutable-daemon.service is active"
-else
-    log_skip "immutable-daemon.service is NOT active (may not be needed if socket is active)"
-fi
-
-# Check daemon socket file
-if [ -S /run/immutable/daemon.sock ]; then
-    log_pass "Daemon socket exists at /run/immutable/daemon.sock"
-else
-    log_fail "Daemon socket NOT found at /run/immutable/daemon.sock"
-fi
-
-# Try to import daemon modules
-echo "  Testing daemon module imports..."
-IMPORT_ERR=$(python3 -c "
-import sys
-import os
-# Support both flat layout (install-daemon.sh) and daemon/ subdirectory (install.sh via @data)
-daemon_dir = '/usr/lib/immutable/daemon'
-flat_dir = '/usr/lib/immutable'
-if os.path.isdir(daemon_dir) and os.path.exists(os.path.join(daemon_dir, 'protocol.py')):
-    sys.path.insert(0, daemon_dir)
-elif os.path.isdir(flat_dir) and os.path.exists(os.path.join(flat_dir, 'protocol.py')):
-    sys.path.insert(0, flat_dir)
-else:
-    print('IMPORT ERROR: daemon modules not found')
-    sys.exit(0)
-try:
-    from protocol import Message
-    from btrfs_ops import BtrfsOps
-    from boot_ops import BootOps
-    from chroot_ops import ChrootMount
-    from commands import CommandHandler
-    from pty_relay import PtyRelay
-    print('OK')
-except Exception as e:
-    print(f'IMPORT ERROR: {e}')
-" 2>&1)
-
-if [ "$IMPORT_ERR" = "OK" ]; then
-    log_pass "All daemon modules import successfully"
-else
-    log_fail "$IMPORT_ERR"
-fi
-
-# Try a simple daemon test (start if not running)
-if ! systemctl is-active immutable-daemon.socket >/dev/null 2>&1; then
-    echo "  Starting daemon socket..."
-    systemctl start immutable-daemon.socket 2>/dev/null || true
-    sleep 1
-fi
-
-if [ -S /run/immutable/daemon.sock ]; then
-    # Test raw socket connection
-    echo "  Testing raw socket connection..."
-    SOCK_TEST=$(python3 -c "
-import socket, json
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-try:
-    sock.connect('/run/immutable/daemon.sock')
-    msg = json.dumps({'cmd': 'list'}) + '\n'
-    sock.sendall(msg.encode())
-    buf = b''
-    while True:
-        chunk = sock.recv(1)
-        if not chunk or chunk == b'\n':
-            break
-        buf += chunk
-    if buf:
-        resp = json.loads(buf.decode())
-        print(f'OK: {resp.get(\"ok\", False)}')
-    else:
-        print('ERROR: No response')
-except Exception as e:
-    print(f'ERROR: {e}')
-finally:
-    sock.close()
-" 2>&1)
-
-    if echo "$SOCK_TEST" | grep -q "OK: True"; then
-        log_pass "Daemon socket responds to list command"
-    else
-        log_fail "Daemon socket: $SOCK_TEST"
-    fi
-else
-    log_fail "Cannot test daemon socket (not found)"
+    log_fail "immutable CLI not found"
 fi
 
 echo ""
