@@ -36,7 +36,7 @@ impl MountGuard {
     }
 }
 
-pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
+pub fn mount_chroot(root: &str, overlay_esp: bool) -> Result<MountContext, String> {
     let mut ctx = MountContext {
         root: root.to_string(),
         mounts: Vec::new(),
@@ -49,7 +49,6 @@ pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
         ("/dev/pts", "/dev/pts"),
         ("/run", "/run"),
         ("/tmp", "/tmp"),
-        ("/boot/efi", "/boot/efi"),
     ];
 
     for (src, dst) in &bind_mounts {
@@ -65,6 +64,30 @@ pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
         if status.success() {
             ctx.mounts.push(target);
         }
+    }
+
+    // ESP: mount overlay's own copy or real ESP
+    let esp_src = if overlay_esp {
+        let candidate = format!("{root}/boot/efi");
+        if std::path::Path::new(&format!("{candidate}/loader/entries/immutable.conf")).exists() {
+            candidate
+        } else {
+            "/boot/efi".to_string()
+        }
+    } else {
+        "/boot/efi".to_string()
+    };
+    let esp_target = format!("{root}/boot/efi");
+    if !std::path::Path::new(&esp_target).exists() {
+        std::fs::create_dir_all(&esp_target)
+            .map_err(|e| format!("Failed to create {esp_target}: {e}"))?;
+    }
+    let status = Command::new("mount")
+        .args(["--bind", &esp_src, &esp_target])
+        .status()
+        .map_err(|e| format!("mount --bind {esp_src} failed: {e}"))?;
+    if status.success() {
+        ctx.mounts.push(esp_target);
     }
 
     // Copy resolv.conf for DNS inside chroot

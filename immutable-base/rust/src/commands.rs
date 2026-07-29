@@ -383,8 +383,8 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
         return Err(format!("Active overlay not found: {active}"));
     }
 
-    // Mount chroot (guard ensures cleanup on all paths)
-    let ctx = mount::mount_chroot(&root)?;
+    // Mount chroot with real ESP (guard ensures cleanup on all paths)
+    let ctx = mount::mount_chroot(&root, false)?;
     let _guard = mount::MountGuard::new(ctx);
 
     // Run update-initramfs inside chroot
@@ -521,8 +521,8 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
 
     use std::io::IsTerminal;
 
-    // Mount chroot (guard ensures cleanup on all paths)
-    let ctx = mount::mount_chroot(&root)?;
+    // Mount chroot with overlay's own ESP copy (guard ensures cleanup on all paths)
+    let ctx = mount::mount_chroot(&root, true)?;
     let _guard = mount::MountGuard::new(ctx);
 
     let envs = forwarded_env_vars();
