@@ -138,38 +138,45 @@ pub fn cmd_create(name: &str, from: Option<&str>) -> Result<(), String> {
 
     // Customize overlay's ESP immutable.conf to point to the new subvol
     let new_subvol = format!("@overlay-{name}");
-    customize_overlay_esp(&dst, &new_subvol);
+    customize_overlay_esp(&dst, &new_subvol, &cfg);
 
     println!("Created overlay '{name}' from {src}");
     println!("{dst}");
     Ok(())
 }
 
-fn customize_overlay_esp(overlay_root: &str, subvol: &str) {
-    let conf_path = format!("{overlay_root}/boot/efi/loader/entries/immutable.conf");
-    let content = match std::fs::read_to_string(&conf_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let updated: Vec<String> = content
-        .lines()
-        .map(|line| {
-            if line.starts_with("options ") && line.contains("subvol=") {
-                // Replace subvol=@overlay-<whatever> with subvol=<subvol>
-                if let Some(start) = line.find("subvol=") {
-                    let before = &line[..start];
-                    let after = line[start..].split_whitespace().nth(0).unwrap_or("");
-                    let rest = &line[start + after.len()..];
-                    format!("{before}subvol={subvol}{rest}")
+fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &config::Config) {
+    let overlay_esp = format!("{overlay_root}/boot/efi");
+    let real_esp = cfg.esp_path();
+    // Populate overlay ESP copy from real ESP (idempotent)
+    let _ = std::process::Command::new("rsync")
+        .args(["-a", &format!("{real_esp}/"), &format!("{overlay_esp}/")])
+        .status();
+    // Fix immutable.conf to point to the correct subvol
+    let conf_path = format!("{overlay_esp}/loader/entries/immutable.conf");
+    if let Ok(content) = std::fs::read_to_string(&conf_path) {
+        let updated: Vec<String> = content
+            .lines()
+            .map(|line| {
+                if line.starts_with("options ") && line.contains("subvol=") {
+                    if let Some(start) = line.find("subvol=") {
+                        let before = &line[..start];
+                        let after = line[start..].split_whitespace().nth(0).unwrap_or("");
+                        let rest = &line[start + after.len()..];
+                        format!("{before}subvol={subvol}{rest}")
+                    } else {
+                        line.to_string()
+                    }
                 } else {
                     line.to_string()
                 }
-            } else {
-                line.to_string()
-            }
-        })
-        .collect();
-    let _ = std::fs::write(&conf_path, updated.join("\n") + "\n");
+            })
+            .collect();
+        let _ = std::fs::write(&conf_path, updated.join("\n") + "\n");
+    }
+    // Set loader.conf to default to immutable.conf
+    let loader_conf_path = format!("{overlay_esp}/loader/loader.conf");
+    let _ = std::fs::write(&loader_conf_path, "default immutable.conf\ntimeout 0\nconsole-mode max\n");
 }
 
 pub fn cmd_delete(name: &str) -> Result<(), String> {
@@ -198,8 +205,10 @@ pub fn cmd_delete(name: &str) -> Result<(), String> {
     if let Some(ref a) = active {
         if *a == format!("@overlay-{name}") {
             let was_ro = boot::esp_remount("rw")?;
-            boot::set_active_overlay(&cfg, "init")
-                .map_err(|e| format!("Failed to revert boot entry: {e}"))?;
+            // Validate @overlay-init's ESP before pointing to it
+            boot::validate_overlay_esp(&cfg.overlay_path("init"), "@overlay-init")?;
+            // Sync @overlay-init's ESP to real ESP (includes correct immutable.conf)
+            sync_overlay_to_esp(&cfg.overlay_path("init"), &cfg)?;
             if was_ro {
                 boot::esp_remount("ro")?;
             }
@@ -255,6 +264,12 @@ pub fn cmd_reset(name: &str) -> Result<(), String> {
 
     btrfs::delete_subvol(&dst)?;
     btrfs::snapshot(&src, &dst)?;
+    let subvol = if name == "init" {
+        "@overlay-init".to_string()
+    } else {
+        format!("@overlay-{name}")
+    };
+    customize_overlay_esp(&dst, &subvol, &cfg);
     println!("Reset overlay '{name}' from {src}");
     Ok(())
 }
@@ -289,11 +304,9 @@ pub fn cmd_switch(name: &str) -> Result<(), String> {
         }
     }
 
-    // 2. Load new overlay's kernel/initrd onto the real ESP for next boot
+    // 2. Load new overlay's ESP onto the real ESP for next boot
+    //    (rsync copies immutable.conf with the correct subvol= already)
     sync_overlay_to_esp(&dst, &cfg)?;
-
-    // 3. Point boot entry to the new subvolume
-    boot::set_active_overlay(&cfg, name)?;
 
     if was_ro {
         boot::esp_remount("ro")?;
@@ -337,6 +350,7 @@ pub fn cmd_reset_recovery() -> Result<(), String> {
         btrfs::delete_subvol(&recovery)?;
     }
     btrfs::snapshot(&src, &recovery)?;
+    customize_overlay_esp(&recovery, "@overlay-recovery", &cfg);
     btrfs::set_property(&recovery, "ro", "true")?;
     println!("Recovery overlay recreated from @base (read-only)");
     Ok(())

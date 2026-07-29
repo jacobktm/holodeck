@@ -2,50 +2,7 @@ use std::path::Path;
 use std::fs;
 use crate::config::Config;
 
-pub fn set_active_overlay(cfg: &Config, name: &str) -> Result<(), String> {
-    let esp = cfg.esp_path();
-    let entries_dir = format!("{esp}/loader/entries");
 
-    // Read the current immutable.conf and update the subvol line
-    let conf_path = format!("{entries_dir}/immutable.conf");
-    let original = std::fs::read_to_string(&conf_path)
-        .map_err(|e| format!("Failed to read {conf_path}: {e}"))?;
-
-    let mut lines: Vec<&str> = original.lines().collect();
-    let mut found = false;
-    for line in &mut lines {
-        if line.starts_with("options ") {
-            let rest = line.strip_prefix("options ").unwrap_or("");
-            // Update subvol=... in kernel cmdline
-            if let Some(pos) = rest.find("subvol=") {
-                let before = &rest[..pos];
-                let after = rest[pos..].split_whitespace().nth(0).unwrap_or("");
-                let after_subvol = &rest[pos + after.len()..];
-                // Reconstruct: keep everything before subvol=, replace value, keep everything after
-                let new_rest = format!("{before}subvol=@overlay-{name}{after_subvol}");
-                *line = Box::leak(new_rest.into_boxed_str());
-            }
-            found = true;
-            break;
-        }
-    }
-
-    if !found {
-        return Err("No 'options' line found in immutable.conf".to_string());
-    }
-
-    let new_content = lines.join("\n") + "\n";
-    std::fs::write(&conf_path, &new_content)
-        .map_err(|e| format!("Failed to write {conf_path}: {e}"))?;
-
-    // Update loader.conf default
-    let loader_conf = format!("{esp}/loader/loader.conf");
-    let loader_content = format!("default immutable.conf\ntimeout 0\nconsole-mode max\n");
-    std::fs::write(&loader_conf, &loader_content)
-        .map_err(|e| format!("Failed to write {loader_conf}: {e}"))?;
-
-    Ok(())
-}
 
 pub fn find_esp_dir(esp_base: &str) -> Option<String> {
     let efi_dir = format!("{esp_base}/EFI");
