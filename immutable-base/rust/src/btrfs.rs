@@ -110,17 +110,18 @@ fn get_size(path: &str) -> Result<String, String> {
 }
 
 pub fn get_active_subvol(cfg: &Config) -> Result<Option<String>, String> {
-    let loader_conf = format!("{}/loader/loader.conf", cfg.esp_path());
-    let content = match std::fs::read_to_string(&loader_conf) {
+    let boot_entry = format!("{}/loader/entries/immutable.conf", cfg.esp_path());
+    let content = match std::fs::read_to_string(&boot_entry) {
         Ok(c) => c,
         Err(_) => return Ok(None),
     };
-    for line in content.lines() {
-        if let Some(val) = line.strip_prefix("default ") {
-            let val = val.trim();
-            if val.starts_with("@overlay-") {
-                return Ok(Some(val.to_string()));
-            }
+    // Match subvol=... in the options line (e.g. rootflags=subvol=@overlay-init)
+    if let Some(pos) = content.find("subvol=") {
+        let rest = &content[pos + 7..];
+        let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+        let subvol = &rest[..end];
+        if !subvol.is_empty() {
+            return Ok(Some(subvol.to_string()));
         }
     }
     Ok(None)
