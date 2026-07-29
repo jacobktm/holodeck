@@ -1,7 +1,8 @@
 #!/bin/bash
 # Immutable-aware kernelstub replacement for kernel post-install.
 # Runs kernelstub on the host; copies files directly in chroot.
-# On the host, syncs the real ESP back to the overlay's ESP copy.
+# On both paths, syncs kernelstub kernel_options into immutable.conf
+# so NVIDIA and other driver options persist in the boot entry.
 
 sync_back_to_overlay() {
     local subvol
@@ -16,7 +17,8 @@ sync_back_to_overlay() {
     rsync -a --delete /boot/efi/ "$overlay_esp/" 2>/dev/null || true
 }
 
-read_kernelstub_config() {
+# Read kernel_options from kernelstub config, space-separated
+read_kernelstub_opts() {
     local config_file="/etc/kernelstub/configuration"
     if [ -f "$config_file" ]; then
         python3 -c "
@@ -31,6 +33,82 @@ except Exception:
 " 2>/dev/null && return 0
     fi
     echo "quiet splash"
+}
+
+# Merge kernelstub options into immutable.conf's options line.
+# Preserves root=, ro, and rootflags= while adding any missing options.
+sync_immutable_conf_opts() {
+    local conf_path="$1"
+    local ks_opts="$2"
+    [ -f "$conf_path" ] || return 0
+
+    local line
+    line=$(grep '^options ' "$conf_path" 2>/dev/null || true)
+    [ -n "$line" ] || return 0
+
+    # Extract parts of the current options line to preserve
+    local root_uuid="" ro_flag="" rootflags=""
+    local current_opts=""
+
+    # Parse the line: "options [options...]"
+    local rest="${line#options }"
+    local parts=()
+    read -ra parts <<< "$rest"
+
+    for part in "${parts[@]}"; do
+        case "$part" in
+            root=UUID=*)
+                root_uuid="$part"
+                ;;
+            ro)
+                ro_flag="ro"
+                ;;
+            rootflags=subvol=*)
+                rootflags="$part"
+                ;;
+            *)
+                current_opts="$current_opts $part"
+                ;;
+        esac
+    done
+    current_opts="${current_opts# }"
+
+    # Add any kernelstub options not already present
+    local ks_parts=()
+    read -ra ks_parts <<< "$ks_opts"
+    for opt in "${ks_parts[@]}"; do
+        local key="${opt%%=*}"
+        local found=0
+        for existing in "${parts[@]}"; do
+            local existing_key="${existing%%=*}"
+            if [ "$existing_key" = "$key" ]; then
+                found=1
+                break
+            fi
+        done
+        if [ "$found" -eq 0 ]; then
+            current_opts="$current_opts $opt"
+        fi
+    done
+    current_opts="${current_opts# }"
+
+    # Reconstruct: root=UUID=xxx ro [opts] rootflags=subvol=xxx
+    local new_opts="$root_uuid ro $current_opts $rootflags"
+    # Remove duplicate spaces
+    new_opts=$(echo "$new_opts" | tr -s ' ' | sed 's/[[:space:]]*$//')
+    new_opts="${new_opts# }"
+
+    # Write updated immutable.conf
+    local linux_line initrd_line
+    linux_line=$(grep '^linux ' "$conf_path" 2>/dev/null || true)
+    initrd_line=$(grep '^initrd ' "$conf_path" 2>/dev/null || true)
+
+    {
+        echo "title Immutable"
+        [ -n "$linux_line" ] && echo "$linux_line" || echo "linux /EFI/Pop_OS-$(ls /boot/efi/EFI/ 2>/dev/null | grep -oP 'Pop_OS-\K.*' || echo 'unknown')/vmlinuz.efi"
+        [ -n "$initrd_line" ] && echo "$initrd_line" || echo "initrd /EFI/Pop_OS-$(ls /boot/efi/EFI/ 2>/dev/null | grep -oP 'Pop_OS-\K.*' || echo 'unknown')/initrd.img"
+        echo "options $new_opts"
+    } > "$conf_path" 2>/dev/null || true
 }
 
 find_esp_dir() {
@@ -87,8 +165,12 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
 
     cp "$INITRD_SRC" "${ESP_DIR}/initrd.img" 2>/dev/null || true
 
-    # Copy /proc/cmdline to ESP (kernelstub does this for debug/info)
+    # Copy /proc/cmdline to ESP (kernelstub does this)
     cp /proc/cmdline "${ESP_DIR}/cmdline" 2>/dev/null || true
+
+    # Sync kernelstub options into immutable.conf (NVIDIA, etc.)
+    KS_OPTS=$(read_kernelstub_opts)
+    sync_immutable_conf_opts "${ESP}/loader/entries/immutable.conf" "$KS_OPTS"
 
     exit 0
 fi
@@ -106,6 +188,10 @@ INITRD="/boot/initrd.img-$1"
 KERNEL="$2"
 
 kernelstub --verbose --preserve-live-mode || true
+
+# Sync kernelstub options into immutable.conf on the real ESP
+KS_OPTS=$(read_kernelstub_opts)
+sync_immutable_conf_opts "${ESP}/loader/entries/immutable.conf" "$KS_OPTS"
 
 sync_back_to_overlay
 
