@@ -140,12 +140,6 @@ configure_rootfs_apt() {
     cp /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg "$ROOTFS_DIR/etc/apt/trusted.gpg.d/"
     cp /etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg "$ROOTFS_DIR/etc/apt/trusted.gpg.d/" 2>/dev/null || true
 
-    # APT proxy
-    if [ -n "$APT_PROXY" ]; then
-        mkdir -p "$ROOTFS_DIR/etc/apt/apt.conf.d"
-        echo "Acquire::http::Proxy \"$APT_PROXY\";" > "$ROOTFS_DIR/etc/apt/apt.conf.d/99proxy"
-    fi
-
     # Keep debootstrap's sources.list for initial installs
     # (needed for ca-certificates before DEB822 repos are available)
 }
@@ -235,6 +229,12 @@ KERNELSTUB
 }
 
 install_base_packages() {
+    # Temporary proxy for build speed — cleaned up before packaging
+    if [ -n "$APT_PROXY" ]; then
+        mkdir -p "$ROOTFS_DIR/etc/apt/apt.conf.d"
+        echo "Acquire::http::Proxy \"$APT_PROXY\";" > "$ROOTFS_DIR/etc/apt/apt.conf.d/99proxy"
+    fi
+
     # ca-certificates first (needed for HTTPS)
     echo "Installing ca-certificates..."
     run_in_chroot "dpkg --add-architecture i386"
@@ -316,6 +316,9 @@ install_base_packages() {
     cat > "$ROOTFS_DIR/etc/apt/apt.conf.d/99-immutable-proxy" <<'APT'
 Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect.sh";
 APT
+
+    # Remove temporary build proxy — installed system uses auto-detect
+    rm -f "$ROOTFS_DIR/etc/apt/apt.conf.d/99proxy"
 }
 
 package_rootfs() {

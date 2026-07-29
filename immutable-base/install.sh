@@ -145,25 +145,6 @@ zstd -d "$ROOTFS_TAR" --stdout | tar -C "$MOUNT_POINT" -xf -
 mkdir -p "$MOUNT_POINT/boot/efi"
 mount "$PART_EFI" "$MOUNT_POINT/boot/efi"
 
-# ── Remove stale APT proxy if unreachable ──
-# The base image may be built with an apt-cacher-ng proxy that isn't
-# available at the install location. Remove it to avoid hung installs.
-PROXY_CONF="$MOUNT_POINT/etc/apt/apt.conf.d/99proxy"
-if [ -f "$PROXY_CONF" ]; then
-    PROXY_URL=$(grep -oP 'http://\S+' "$PROXY_CONF" | head -1 | tr -d '";')
-    if [ -n "$PROXY_URL" ]; then
-        # Extract host:port from URL
-        PROXY_HOST=$(echo "$PROXY_URL" | sed -E 's|https?://||; s|/.*||; s|:.*||')
-        PROXY_PORT=$(echo "$PROXY_URL" | sed -E 's|.*:||; s|/.*||')
-        if ! ping -c 1 -W 2 "$PROXY_HOST" &>/dev/null; then
-            echo "APT proxy $PROXY_URL is unreachable — removing from rootfs"
-            rm -f "$PROXY_CONF"
-        else
-            echo "APT proxy $PROXY_URL is reachable — keeping"
-        fi
-    fi
-fi
-
 # ── Encrypted swap (plain dm-crypt, auto-generated key like Pop!_OS) ──
 
 mkswap -L swap "$PART_SWAP"
