@@ -1,0 +1,23 @@
+[package]
+name = "immutable"
+version = "0.1.0"
+edition = "2021"
+description = "Immutable Pop!_OS management tool"
+
+[features]
+default = ["dbus"]
+dbus = ["zbus"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+libc = "0.2.189"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zbus = { version = "5", optional = true }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

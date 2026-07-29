@@ -344,7 +344,28 @@ info "Step 1: Creating rootfs with debootstrap"
 
     teardown_chroot
 
-    info "Step 3: Packaging base rootfs"
+    info "Step 3: Building static immutable CLI (Rust)"
+
+    if command -v cargo &>/dev/null; then
+        local rust_src="$SCRIPT_DIR/rust"
+        if [ -d "$rust_src" ]; then
+            echo "Building immutable Rust binary..."
+            (cd "$rust_src" && cargo build --release --no-default-features --target x86_64-unknown-linux-musl)
+            local rust_binary="$rust_src/target/x86_64-unknown-linux-musl/release/immutable"
+            if [ -f "$rust_binary" ]; then
+                install -Dm755 "$rust_binary" "$ROOTFS_DIR/usr/bin/immutable"
+                echo "  Installed: /usr/bin/immutable (static musl)"
+            else
+                echo "  WARNING: Rust build failed, binary not found"
+            fi
+        else
+            echo "  WARNING: Rust source not found at $rust_src"
+        fi
+    else
+        echo "  WARNING: cargo not found, skipping Rust binary build"
+    fi
+
+    info "Step 4: Packaging base rootfs"
     package_rootfs "$BASE_OUTPUT"
 
 echo ""
