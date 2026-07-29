@@ -472,6 +472,14 @@ install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
 install -Dm644 "$HOOKS_SRC/immutable-hooks-apt-hook" \
     "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-hooks"
 
+# Apt proxy auto-detect script + config
+install -Dm755 "$HOOKS_SRC/apt-proxy-detect.sh" \
+    "$MOUNT_POINT/usr/lib/immutable/apt-proxy-detect.sh"
+install -Dm644 /dev/stdin \
+    "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-proxy" <<'APT'
+Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect.sh";
+APT
+
 # Boot recovery scripts in @data (shared, overridable)
 install -Dm755 "$(dirname "$0")/immutable-boot-counter.sh" \
     "$MOUNT_POINT/pool/@data/immutable/immutable-boot-counter.sh"

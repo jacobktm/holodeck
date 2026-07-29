@@ -308,6 +308,14 @@ install_base_packages() {
         "$ROOTFS_DIR/usr/lib/immutable/immutable-boot-counter.sh"
     install -Dm755 "$HOOKS_SRC/../immutable-healthcheck.sh" \
         "$ROOTFS_DIR/usr/lib/immutable/immutable-healthcheck.sh"
+
+    # Apt proxy auto-detect — dynamic probe at apt runtime
+    install -Dm755 "$HOOKS_SRC/apt-proxy-detect.sh" \
+        "$ROOTFS_DIR/usr/lib/immutable/apt-proxy-detect.sh"
+    mkdir -p "$ROOTFS_DIR/etc/apt/apt.conf.d"
+    cat > "$ROOTFS_DIR/etc/apt/apt.conf.d/99-immutable-proxy" <<'APT'
+Acquire::http::ProxyAutoDetect "/usr/lib/immutable/apt-proxy-detect.sh";
+APT
 }
 
 package_rootfs() {
