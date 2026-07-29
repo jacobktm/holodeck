@@ -211,20 +211,22 @@ pub fn cmd_switch(name: &str) -> Result<(), String> {
 
     let was_ro = boot::esp_remount("rw")?;
 
-    // 1. Sync current overlay's ESP copy to real ESP
     let active = btrfs::get_active_subvol(&cfg)
         .map_err(|e| format!("Failed to get boot config: {e}"))?;
+
+    // 1. Save real ESP state back to current overlay's /boot/efi
+    //    (ensures A's copy is fresh if kernelstub hooks didn't sync back)
     if let Some(ref a) = active {
         let active_root = format!("{}/{}", cfg.pool, a);
         if Path::new(&active_root).is_dir() {
-            sync_esp(&active_root, &cfg)?;
+            sync_esp_to_overlay(&active_root, &cfg)?;
         }
     }
 
-    // 2. Sync new overlay's ESP copy to real ESP (kernel/initrd for next boot)
-    sync_esp(&dst, &cfg)?;
+    // 2. Load new overlay's kernel/initrd onto the real ESP for next boot
+    sync_overlay_to_esp(&dst, &cfg)?;
 
-    // 3. Update boot entry to point to new overlay
+    // 3. Point boot entry to the new subvolume
     boot::set_active_overlay(&cfg, name)?;
 
     if was_ro {
@@ -332,7 +334,7 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_esp(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
+fn sync_overlay_to_esp(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
     let overlay_esp = format!("{overlay_root}/boot/efi");
     let real_esp = cfg.esp_path();
     if !Path::new(&overlay_esp).is_dir() {
@@ -344,6 +346,21 @@ fn sync_esp(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
         .map_err(|e| format!("rsync failed: {e}"))?;
     if !status.success() {
         return Err("Failed to sync overlay ESP to real ESP".to_string());
+    }
+    Ok(())
+}
+
+fn sync_esp_to_overlay(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
+    let overlay_esp = format!("{overlay_root}/boot/efi");
+    let real_esp = cfg.esp_path();
+    std::fs::create_dir_all(&overlay_esp)
+        .map_err(|e| format!("Failed to create {overlay_esp}: {e}"))?;
+    let status = std::process::Command::new("rsync")
+        .args(["-a", &format!("{real_esp}/"), &format!("{overlay_esp}/")])
+        .status()
+        .map_err(|e| format!("rsync failed: {e}"))?;
+    if !status.success() {
+        return Err("Failed to sync real ESP to overlay ESP".to_string());
     }
     Ok(())
 }
