@@ -209,22 +209,24 @@ pub fn cmd_switch(name: &str) -> Result<(), String> {
         return Err(format!("Overlay '{name}' not found"));
     }
 
-    // Sync current overlay's ESP copy to real ESP before switching
+    let was_ro = boot::esp_remount("rw")?;
+
+    // 1. Sync current overlay's ESP copy to real ESP
     let active = btrfs::get_active_subvol(&cfg)
         .map_err(|e| format!("Failed to get boot config: {e}"))?;
     if let Some(ref a) = active {
         let active_root = format!("{}/{}", cfg.pool, a);
         if Path::new(&active_root).is_dir() {
-            let was_ro = boot::esp_remount("rw")?;
             sync_esp(&active_root, &cfg)?;
-            if was_ro {
-                boot::esp_remount("ro")?;
-            }
         }
     }
 
-    let was_ro = boot::esp_remount("rw")?;
+    // 2. Sync new overlay's ESP copy to real ESP (kernel/initrd for next boot)
+    sync_esp(&dst, &cfg)?;
+
+    // 3. Update boot entry to point to new overlay
     boot::set_active_overlay(&cfg, name)?;
+
     if was_ro {
         boot::esp_remount("ro")?;
     }
