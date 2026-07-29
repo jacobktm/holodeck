@@ -1,23 +1,53 @@
 #!/bin/bash
-# apt ProxyAutoDetect script.
-# If a proxy is configured and reachable, use it; otherwise go direct.
-# Configure by creating /etc/immutable-apt-proxy.conf with:
-#   APT_PROXY=http://hostname:port
+# apt ProxyAutoDetect script — auto-discovers proxy via mDNS/DNS,
+# falls back to DIRECT if unreachable. Override with config file.
 
-CONF="/etc/immutable-apt-proxy.conf"
 TIMEOUT=2
+CONF="/etc/immutable-apt-proxy.conf"
 
-[ -f "$CONF" ] || { echo "DIRECT"; exit 0; }
+# Common mDNS/DNS names that apt-cacher-ng and similar proxies register
+CANDIDATES=(
+    "apt-cacher-ng.local"
+    "apt-proxy.local"
+    "proxy.local"
+)
 
-PROXY=$(grep -oP '^APT_PROXY=\K.*' "$CONF" 2>/dev/null || true)
-[ -n "$PROXY" ] || { echo "DIRECT"; exit 0; }
+# Well-known proxy IPs — reachable from all subnets even when mDNS doesn't cross
+# (Pop!_OS build infrastructure)
+CANDIDATE_IPS=(
+    "PROXY_HOST:3142"
+)
 
-# Strip protocol for host:port check
-HOSTPORT="${PROXY#http://}"
-HOSTPORT="${HOSTPORT#https://}"
+try_proxy() {
+    local url="$1"
+    local hostport="${url#http://}"
+    hostport="${hostport#https://}"
+    if timeout "$TIMEOUT" bash -c "echo > /dev/tcp/${hostport%:*}/${hostport#*:}" 2>/dev/null; then
+        echo "$url"
+        exit 0
+    fi
+}
 
-if timeout "$TIMEOUT" bash -c "echo > /dev/tcp/${HOSTPORT%:*}/${HOSTPORT#*:}" 2>/dev/null; then
-    echo "$PROXY"
-else
-    echo "DIRECT"
+# 1. Config file override
+if [ -f "$CONF" ]; then
+    PROXY=$(grep -oP '^APT_PROXY=\K.*' "$CONF" 2>/dev/null || true)
+    [ -n "$PROXY" ] && try_proxy "$PROXY"
 fi
+
+# 2. Try well-known IPs directly (no DNS needed)
+for candidate in "${CANDIDATE_IPS[@]}"; do
+    try_proxy "http://$candidate"
+done
+
+# 3. Auto-discover via mDNS/DNS — resolve each candidate and test
+for name in "${CANDIDATES[@]}"; do
+    ips=$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | sort -u)
+    [ -z "$ips" ] && continue
+    while IFS= read -r ip; do
+        [ -z "$ip" ] && continue
+        try_proxy "http://$ip:3142"
+    done <<< "$ips"
+done
+
+# 4. Nothing reachable
+echo "DIRECT"
