@@ -19,8 +19,10 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         let username = resolve_username();
+        let pool = std::env::var("IMMUTABLE_POOL")
+            .unwrap_or_else(|_| DEFAULT_POOL.to_string());
         Self {
-            pool: DEFAULT_POOL.to_string(),
+            pool,
             base_subvol: DEFAULT_BASE.to_string(),
             init_overlay: DEFAULT_INIT.to_string(),
             recovery_overlay: DEFAULT_RECOVERY.to_string(),

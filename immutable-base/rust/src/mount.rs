@@ -5,6 +5,37 @@ pub struct MountContext {
     pub mounts: Vec<String>,
 }
 
+impl Drop for MountContext {
+    fn drop(&mut self) {
+        for mount in self.mounts.iter().rev() {
+            Command::new("umount")
+                .args(["-l", mount])
+                .status()
+                .ok();
+        }
+    }
+}
+
+/// Guard that ensures chroot mounts are cleaned up on drop
+pub struct MountGuard {
+    ctx: MountContext,
+}
+
+impl MountGuard {
+    pub fn new(ctx: MountContext) -> Self {
+        MountGuard { ctx }
+    }
+
+    pub fn root(&self) -> &str {
+        &self.ctx.root
+    }
+
+    pub fn unmount(mut self) {
+        // Take ownership and drop, which triggers MountContext::drop
+        drop(self);
+    }
+}
+
 pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
     let mut ctx = MountContext {
         root: root.to_string(),
@@ -15,7 +46,9 @@ pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
         ("/proc", "/proc"),
         ("/sys", "/sys"),
         ("/dev", "/dev"),
+        ("/dev/pts", "/dev/pts"),
         ("/run", "/run"),
+        ("/tmp", "/tmp"),
         ("/boot/efi", "/boot/efi"),
     ];
 
@@ -29,11 +62,14 @@ pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
             .args(["--bind", src, &target])
             .status()
             .map_err(|e| format!("mount --bind {src} failed: {e}"))?;
-        if !status.success() {
-            // Maybe already mounted, continue
+        if status.success() {
+            ctx.mounts.push(target);
         }
-        ctx.mounts.push(target);
     }
+
+    // Copy resolv.conf for DNS inside chroot
+    let resolv_dst = format!("{root}/etc/resolv.conf");
+    let _ = std::fs::copy("/etc/resolv.conf", &resolv_dst);
 
     Ok(ctx)
 }

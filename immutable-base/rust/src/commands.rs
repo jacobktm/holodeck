@@ -25,6 +25,12 @@ pub fn cmd_list() -> Result<(), String> {
         let label = if ov.readonly { "readonly" } else { "writable" };
         println!("{:<20} {:>8}  {}", ov.name, ov.size, label);
     }
+    // Also show @data if it exists
+    let data = format!("{}/@data", cfg.pool);
+    if Path::new(&data).is_dir() {
+        let size = btrfs::get_size(&data).unwrap_or_default();
+        println!("{:<20} {:>8}  {}", "@data", size, "writable");
+    }
     Ok(())
 }
 
@@ -34,6 +40,10 @@ pub fn cmd_list_names() -> Result<(), String> {
     let overlays = btrfs::list_overlays(&cfg)?;
     for ov in &overlays {
         println!("{}", ov.name);
+    }
+    let data = format!("{}/@data", cfg.pool);
+    if Path::new(&data).is_dir() {
+        println!("@data");
     }
     Ok(())
 }
@@ -143,7 +153,13 @@ pub fn cmd_delete(name: &str) -> Result<(), String> {
         return Err(format!("Overlay '{name}' not found"));
     }
 
-    // If this is the active overlay, revert boot to init first
+    // Reject deletion of the currently running overlay
+    let running = btrfs::get_running_subvol();
+    if running.as_deref() == Some(&format!("@overlay-{name}")) {
+        return Err(format!("Cannot delete overlay '{name}': it is the currently running system"));
+    }
+
+    // If this is the active boot overlay, revert boot to init first
     let active = btrfs::get_active_subvol(&cfg)
         .map_err(|e| format!("Failed to get boot config: {e}"))?;
 
@@ -165,19 +181,30 @@ pub fn cmd_delete(name: &str) -> Result<(), String> {
 }
 
 pub fn cmd_reset(name: &str) -> Result<(), String> {
-    if name == "recovery" {
-        return Err("Cannot reset recovery directly. Use 'reset-recovery' instead.".to_string());
-    }
-    if SYSTEM_OVERLAYS.contains(&name) {
-        return Err(format!("Cannot reset {name}: it is a system overlay"));
-    }
-
     let cfg = cfg();
     ensure_pool(&cfg)?;
 
-    let dst = cfg.overlay_path(name);
+    if name == "recovery" {
+        return Err("Cannot reset recovery directly. Use 'reset-recovery' instead.".to_string());
+    }
+
+    let dst = if name == "init" {
+        cfg.init_path()
+    } else {
+        if SYSTEM_OVERLAYS.contains(&name) {
+            return Err(format!("Cannot reset {name}: it is a system overlay"));
+        }
+        cfg.overlay_path(name)
+    };
+
     if !Path::new(&dst).exists() {
         return Err(format!("Overlay '{name}' not found"));
+    }
+
+    // Reject reset of the currently running overlay
+    let running = btrfs::get_running_subvol();
+    if running.as_deref() == Some(&format!("@overlay-{name}")) {
+        return Err(format!("Cannot reset overlay '{name}': it is the currently running system"));
     }
 
     let src = if name == "init" {
@@ -189,6 +216,10 @@ pub fn cmd_reset(name: &str) -> Result<(), String> {
             .map(|s| format!("{}/{}", cfg.pool, s));
         active.unwrap_or_else(|| cfg.base_path())
     };
+
+    if !Path::new(&src).exists() {
+        return Err(format!("Source '{src}' not found"));
+    }
 
     btrfs::delete_subvol(&dst)?;
     btrfs::snapshot(&src, &dst)?;
@@ -303,8 +334,9 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
         return Err(format!("Active overlay not found: {active}"));
     }
 
-    // Mount chroot
+    // Mount chroot (guard ensures cleanup on all paths)
     let ctx = mount::mount_chroot(&root)?;
+    let _guard = mount::MountGuard::new(ctx);
 
     // Run update-initramfs inside chroot
     let status = std::process::Command::new("chroot")
@@ -315,22 +347,57 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("chroot update-initramfs failed: {e}"))?;
 
     if !status.success() {
-        mount::unmount_chroot(&ctx);
         return Err("update-initramfs failed".to_string());
     }
 
-    // Sync kernel/initrd to ESP
-    let esp_dir = boot::find_esp_dir(cfg.esp_path())
-        .ok_or("Cannot find ESP kernel directory".to_string())?;
+    // Find latest kernel in overlay's /boot
+    let boot_dir = format!("{root}/boot");
+    let mut kernels: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&boot_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("vmlinuz-") && !entry.path().is_symlink() {
+                kernels.push(name);
+            }
+        }
+    }
+    kernels.sort();
+    let latest = kernels.last().ok_or("No kernels found in overlay /boot")?;
+    let version = latest.strip_prefix("vmlinuz-").unwrap_or(latest);
 
+    // Find ESP kernel directory within the overlay's ESP copy
+    let overlay_esp = format!("{root}/boot/efi");
+    let esp_dir = boot::find_esp_dir(&overlay_esp)
+        .ok_or("Cannot find ESP kernel directory in overlay".to_string())?;
+
+    // Copy kernel/initrd to overlay's ESP copy, saving previous
+    std::fs::create_dir_all(&esp_dir)
+        .map_err(|e| format!("Failed to create {esp_dir}: {e}"))?;
+
+    let kernel_src = format!("{boot_dir}/{latest}");
+    let initrd_src = format!("{boot_dir}/initrd.img-{version}");
+
+    // Save previous kernel/initrd before overwriting
+    let prev_kernel = format!("{esp_dir}/vmlinuz-previous.efi");
+    let prev_initrd = format!("{esp_dir}/initrd.img-previous");
+    let cur_kernel = format!("{esp_dir}/vmlinuz.efi");
+    let cur_initrd = format!("{esp_dir}/initrd.img");
+    let _ = std::fs::copy(&cur_kernel, &prev_kernel);
+    let _ = std::fs::copy(&cur_initrd, &prev_initrd);
+
+    std::fs::copy(&kernel_src, &cur_kernel)
+        .map_err(|e| format!("Failed to copy kernel: {e}"))?;
+    std::fs::copy(&initrd_src, &cur_initrd)
+        .map_err(|e| format!("Failed to copy initrd: {e}"))?;
+
+    // Sync overlay's ESP copy to the real ESP
     let was_ro = boot::esp_remount("rw")?;
-    boot::sync_kernel_initrd(&root, &esp_dir)?;
+    sync_overlay_to_esp(&root, &cfg)?;
     if was_ro {
         boot::esp_remount("ro")?;
     }
 
-    mount::unmount_chroot(&ctx);
-    println!("update-initramfs complete. ESP synced.");
+    println!("update-initramfs complete for {version}. ESP synced.");
     Ok(())
 }
 
@@ -365,6 +432,25 @@ fn sync_esp_to_overlay(overlay_root: &str, cfg: &config::Config) -> Result<(), S
     Ok(())
 }
 
+fn forwarded_env_vars() -> Vec<(String, String)> {
+    let keys = [
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "DISPLAY",
+        "PULSE_SERVER",
+    ];
+    keys.iter()
+        .filter_map(|k| {
+            std::env::var(k).ok().map(|v| (k.to_string(), v))
+        })
+        .collect()
+}
+
+fn build_env_args(envs: &[(String, String)]) -> Vec<String> {
+    envs.iter().map(|(k, v)| format!("{k}={v}")).collect()
+}
+
 pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     let cfg = cfg();
     ensure_pool(&cfg)?;
@@ -383,29 +469,42 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
 
     use std::io::IsTerminal;
 
-    // Mount chroot
+    // Mount chroot (guard ensures cleanup on all paths)
     let ctx = mount::mount_chroot(&root)?;
+    let _guard = mount::MountGuard::new(ctx);
+
+    let envs = forwarded_env_vars();
 
     if !std::io::stdin().is_terminal() {
-        // Non-interactive: just exec via chroot
+        // Non-interactive: pass env vars through sudo's KEY=val syntax
         let mut cmd = std::process::Command::new("chroot");
-        cmd.arg(&root).arg("sudo").arg("-u").arg(&cfg.username);
+        cmd.arg(&root).arg("sudo");
+        for (k, v) in &envs {
+            cmd.arg(format!("{k}={v}"));
+        }
+        cmd.arg("-u").arg(&cfg.username);
         if !args.is_empty() {
             cmd.args(args);
         }
         let status = cmd.status()
             .map_err(|e| format!("chroot exec failed: {e}"))?;
-        mount::unmount_chroot(&ctx);
         if !status.success() {
             return Err("Command failed".to_string());
         }
         return Ok(());
     }
 
-    // Interactive: allocate PTY and fork
-    // Use script(1) to allocate a PTY for the chroot
+    // Interactive: allocate PTY via script(1)
+    // Pass env vars through sudo's KEY=val syntax (survives env_reset)
+    let env_args = build_env_args(&envs);
+    let env_prefix = if env_args.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", env_args.join(" "))
+    };
+
     let shell_cmd = if args.is_empty() {
-        format!("chroot {root} sudo -u {} /bin/bash --login", cfg.username)
+        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash --login", cfg.username)
     } else {
         let joined: Vec<String> = args.iter().map(|a| {
             if a.contains(' ') {
@@ -414,7 +513,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
                 a.clone()
             }
         }).collect();
-        format!("chroot {root} sudo -u {} /bin/bash --login -c {}", cfg.username, joined.join(" "))
+        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash --login -c {}", cfg.username, joined.join(" "))
     };
 
     let status = std::process::Command::new("script")
@@ -422,7 +521,6 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
         .status()
         .map_err(|e| format!("script failed: {e}"))?;
 
-    mount::unmount_chroot(&ctx);
     if !status.success() {
         return Err("Shell exited with error".to_string());
     }

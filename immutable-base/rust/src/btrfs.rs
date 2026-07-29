@@ -99,7 +99,7 @@ fn is_readonly(path: &str) -> Result<bool, String> {
     Ok(stdout.trim() == "ro=true")
 }
 
-fn get_size(path: &str) -> Result<String, String> {
+pub fn get_size(path: &str) -> Result<String, String> {
     let output = Command::new("du")
         .args(["-sh", path])
         .output()
@@ -125,4 +125,21 @@ pub fn get_active_subvol(cfg: &Config) -> Result<Option<String>, String> {
         }
     }
     Ok(None)
+}
+
+pub fn get_running_subvol() -> Option<String> {
+    let content = std::fs::read_to_string("/proc/mounts").ok()?;
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 && parts.get(1) == Some(&"/") {
+            for opt in parts[3].split(',') {
+                if let Some(val) = opt.strip_prefix("subvol=") {
+                    if !val.is_empty() {
+                        return Some(val.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }

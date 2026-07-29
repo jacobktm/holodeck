@@ -33,7 +33,7 @@ pub fn set_active_overlay(cfg: &Config, name: &str) -> Result<(), String> {
         return Err("No 'options' line found in immutable.conf".to_string());
     }
 
-    let new_content = lines.join("\n");
+    let new_content = lines.join("\n") + "\n";
     std::fs::write(&conf_path, &new_content)
         .map_err(|e| format!("Failed to write {conf_path}: {e}"))?;
 
