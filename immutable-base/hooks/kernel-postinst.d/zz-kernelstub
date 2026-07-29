@@ -20,22 +20,30 @@ ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
 REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
 
 if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
+    # Inside overlay shell (chroot) — copy kernel/initrd to overlay's ESP copy directly
     ESP="/boot/efi"
     if ! mountpoint -q "$ESP" 2>/dev/null; then
         exit 0
     fi
-    if ! findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
-        INITRD="/boot/initrd.img-$1"
-        KERNEL="$2"
-        kernelstub --verbose --preserve-live-mode || true
-        exit 0
+    KERNEL_SRC="$2"
+    INITRD_SRC="/boot/initrd.img-$1"
+    # Find ESP kernel directory (Pop_OS-<UUID> or systemd)
+    ESP_DIR=""
+    for d in "$ESP"/EFI/Pop_OS-*; do
+        if [ -d "$d" ]; then
+            ESP_DIR="$d"
+            break
+        fi
+    done
+    if [ -z "$ESP_DIR" ] && [ -d "$ESP/EFI/systemd" ]; then
+        ESP_DIR="$ESP/EFI/systemd"
     fi
-    if mount -o remount,rw,bind "$ESP" 2>/dev/null; then
-        INITRD="/boot/initrd.img-$1"
-        KERNEL="$2"
-        kernelstub --verbose --preserve-live-mode || true
-        mount -o remount,ro,bind "$ESP" 2>/dev/null
-        exit 0
+    if [ -n "$ESP_DIR" ] && [ -f "$KERNEL_SRC" ] && [ -f "$INITRD_SRC" ]; then
+        # Save previous kernel/initrd
+        [ -f "$ESP_DIR/vmlinuz.efi" ] && cp "$ESP_DIR/vmlinuz.efi" "$ESP_DIR/vmlinuz-previous.efi" 2>/dev/null || true
+        [ -f "$ESP_DIR/initrd.img" ] && cp "$ESP_DIR/initrd.img" "$ESP_DIR/initrd.img-previous" 2>/dev/null || true
+        cp "$KERNEL_SRC" "$ESP_DIR/vmlinuz.efi" 2>/dev/null || true
+        cp "$INITRD_SRC" "$ESP_DIR/initrd.img" 2>/dev/null || true
     fi
     exit 0
 fi
