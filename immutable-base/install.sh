@@ -395,12 +395,24 @@ mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
 
 # ── Install immutable CLI to @data (shared across all overlays) ──
 
+IMMUTABLE_BIN="$(dirname "$0")/immutable"
+if [ ! -f "$IMMUTABLE_BIN" ]; then
+    echo "ERROR: Rust CLI binary not found at $IMMUTABLE_BIN" >&2
+    echo "  Run './build-rust.sh' first, then retry install.sh" >&2
+    exit 1
+fi
+if ! file "$IMMUTABLE_BIN" 2>/dev/null | grep -q "ELF"; then
+    echo "ERROR: $IMMUTABLE_BIN is not a compiled binary (expected Rust ELF)" >&2
+    echo "  Run './build-rust.sh' to build the Rust CLI, then retry" >&2
+    exit 1
+fi
+
 mkdir -p "$MOUNT_POINT/pool/@data/immutable/bin"
-cp "$(dirname "$0")/immutable" "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
+cp "$IMMUTABLE_BIN" "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
 chmod +x "$MOUNT_POINT/pool/@data/immutable/bin/immutable"
 
 # Also install directly to @base as baseline (bind mount from @data overrides at boot)
-cp "$(dirname "$0")/immutable" "$MOUNT_POINT/usr/local/bin/immutable"
+cp "$IMMUTABLE_BIN" "$MOUNT_POINT/usr/local/bin/immutable"
 chmod +x "$MOUNT_POINT/usr/local/bin/immutable"
 
 # Bash completions in @data
