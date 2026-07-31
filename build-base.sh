@@ -8,8 +8,28 @@ VERSION="0.2.0"
 DISTRO="noble"
 MIRROR="http://apt.pop-os.org/ubuntu"
 ARCH="amd64"
-BUILD_DIR="${BUILD_DIR:-/tmp/immutable-build}"
+BUILD_DIR="${BUILD_DIR:-}"
 ROOTFS_DIR="$BUILD_DIR/rootfs"
+
+# In an ISO live environment /tmp may not exist; fall back to a writable location.
+# A write probe is used instead of `[ -w ]` because root passes permission checks
+# even on read-only mounts (e.g. the ISO's squashfs).
+pick_build_base() {
+    local dir
+    for dir in "${TMPDIR:-/tmp}" /run /var/tmp /home; do
+        if [ -d "$dir" ] && ( : > "$dir/.immutable-probe" ) 2>/dev/null; then
+            rm -f "$dir/.immutable-probe"
+            echo "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ -z "$BUILD_DIR" ]; then
+    BASE_DIR="$(pick_build_base)" || { echo "ERROR: No writable build directory found (tried \${TMPDIR:-/tmp}, /run, /var/tmp, /home)" >&2; exit 1; }
+    BUILD_DIR="$BASE_DIR/immutable-build"
+fi
 
 # Pop!_OS repo URIs and keys (matching iso/config/pop-os/*.mk)
 RELEASE_URI="http://apt.pop-os.org/release"
