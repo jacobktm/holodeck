@@ -7,7 +7,6 @@ set -uo pipefail
 # Run as a regular user — only specific commands use sudo.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 POOL="/pool"
 BASE="$POOL/@base"
 TEST_OVERLAY="test-$(date +%s)"
@@ -16,6 +15,33 @@ TEST_FILE="/tmp/immutable-test-marker-$$"
 PASS=0
 FAIL=0
 SKIP=0
+
+# Resolve the primary user: SUDO_USER → /etc/immutable.conf → /home scan.
+# Never hardcode a username.
+detect_username() {
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        echo "$SUDO_USER"
+        return
+    fi
+    if [ -f /etc/immutable.conf ]; then
+        local name
+        name=$(grep -oP '^USERNAME=\K.*' /etc/immutable.conf 2>/dev/null || true)
+        if [ -n "$name" ]; then
+            echo "$name"
+            return
+        fi
+    fi
+    for d in /home/*; do
+        [ -d "$d" ] || continue
+        local name
+        name=$(basename "$d")
+        [ "$name" = "root" ] && continue
+        echo "$name"
+        return
+    done
+    echo "user"
+}
+TEST_USERNAME="$(detect_username)"
 
 # Package to test shadowing (must be installed in @base)
 TEST_PKG_REMOVE="${TEST_PKG_REMOVE:-curl}"
@@ -435,7 +461,7 @@ echo ""
 
 echo "=== Test 6: @data Persistence ==="
 
-# @data is mounted at /home/USERNAME/ in each overlay's chroot,
+# @data is mounted at /home/$TEST_USERNAME/ in each overlay's chroot,
 # but at the pool level it's $POOL/@data/
 DATA_MARKER="data-test-$$-$(date +%s)"
 echo "  Writing marker '$DATA_MARKER' to @data"
@@ -448,7 +474,7 @@ else
 fi
 
 # Verify @data is visible in overlay
-if [ -f "$OVERLAY_PATH/home/USERNAME/$DATA_MARKER" ] || [ -f "$POOL/@data/$DATA_MARKER" ]; then
+if [ -f "$OVERLAY_PATH/home/$TEST_USERNAME/$DATA_MARKER" ] || [ -f "$POOL/@data/$DATA_MARKER" ]; then
     log_pass "@data is accessible (marker visible at pool level)"
 else
     log_fail "@data marker not found"
@@ -646,8 +672,16 @@ if [ -n "$INSTALL_PKG" ] && [ -n "$INSTALL_REPO" ]; then
 
     # Install the package from the specific branch in overlay1
     echo "  Installing $INSTALL_PKG from $INSTALL_REPO in $TEST_OVERLAY..."
-    # Copy popdev keyring into overlay directly
-    KEYRING_SRC="$REPO_ROOT/lib/popdev-archive-keyring.gpg"
+    # Copy the Pop!_OS archive signing key into the overlay directly.
+    # Same key signs both release and staging repos (apt.pop-os.org).
+    KEYRING_SRC=""
+    for candidate in /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg \
+                     /usr/share/keyrings/pop-archive-keyring.gpg; do
+        if [ -f "$candidate" ]; then
+            KEYRING_SRC="$candidate"
+            break
+        fi
+    done
     KEYRING_DST="$POOL/@overlay-$TEST_OVERLAY/etc/apt/keyrings/popdev-archive-keyring.gpg"
     if [ -f "$KEYRING_SRC" ]; then
         root_cmd mkdir -p "$(dirname "$KEYRING_DST")"
@@ -735,8 +769,6 @@ echo ""
 # ════════════════════════════════════════════
 
 echo "=== Test 12: Non-root User Access to Overlays ==="
-
-TEST_USERNAME="USERNAME"
 
 if id "$TEST_USERNAME" &>/dev/null; then
     echo "  Testing as user: $TEST_USERNAME (uid=$(id -u $TEST_USERNAME))"

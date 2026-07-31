@@ -42,12 +42,42 @@ trap cleanup EXIT
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ""; echo "══════════════════════════════════════"; echo " $1"; echo "══════════════════════════════════════"; echo ""; }
 
-# Check for apt-cacher-ng proxy
-APT_PROXY=""
-if ping -c 1 -W 2 PROXY_HOST &>/dev/null; then
-    APT_PROXY="http://PROXY_HOST:3142"
-    echo "APT proxy detected: $APT_PROXY"
-fi
+# Detect an APT proxy, in order of precedence:
+#   1. $APT_PROXY_URL environment variable
+#   2. /etc/immutable-apt-proxy.conf (APT_PROXY=... line, same file the
+#      installed apt-proxy-detect hook reads)
+#   3. mDNS/DNS auto-discovery of common apt-cacher-ng hostnames
+# No proxy is configured if none are found.
+detect_apt_proxy() {
+    local url name ip
+
+    if [ -n "${APT_PROXY_URL:-}" ]; then
+        echo "$APT_PROXY_URL"
+        return
+    fi
+
+    if [ -f /etc/immutable-apt-proxy.conf ]; then
+        url=$(grep -oP '^APT_PROXY=\K.*' /etc/immutable-apt-proxy.conf 2>/dev/null || true)
+        if [ -n "$url" ]; then
+            echo "$url"
+            return
+        fi
+    fi
+
+    for name in apt-cacher-ng.local apt-proxy.local proxy.local; do
+        ip=$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | head -1)
+        [ -z "$ip" ] && continue
+        if timeout 2 bash -c "echo > /dev/tcp/${ip}/3142" 2>/dev/null; then
+            echo "http://$ip:3142"
+            return
+        fi
+    done
+
+    echo ""
+}
+
+APT_PROXY="$(detect_apt_proxy)"
+[ -n "$APT_PROXY" ] && echo "APT proxy detected: $APT_PROXY"
 
 usage() {
     cat <<EOF

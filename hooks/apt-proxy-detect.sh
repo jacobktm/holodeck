@@ -12,12 +12,6 @@ CANDIDATES=(
     "proxy.local"
 )
 
-# Well-known proxy IPs — reachable from all subnets even when mDNS doesn't cross
-# (Pop!_OS build infrastructure)
-CANDIDATE_IPS=(
-    "PROXY_HOST:3142"
-)
-
 try_proxy() {
     local url="$1"
     local hostport="${url#http://}"
@@ -34,12 +28,7 @@ if [ -f "$CONF" ]; then
     [ -n "$PROXY" ] && try_proxy "$PROXY"
 fi
 
-# 2. Try well-known IPs directly (no DNS needed)
-for candidate in "${CANDIDATE_IPS[@]}"; do
-    try_proxy "http://$candidate"
-done
-
-# 3. Auto-discover via mDNS/DNS — resolve each candidate and test
+# 2. Auto-discover via mDNS/DNS — resolve each candidate and test
 for name in "${CANDIDATES[@]}"; do
     ips=$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | sort -u)
     [ -z "$ips" ] && continue
@@ -49,5 +38,5 @@ for name in "${CANDIDATES[@]}"; do
     done <<< "$ips"
 done
 
-# 4. Nothing reachable
+# 3. Nothing reachable
 echo "DIRECT"

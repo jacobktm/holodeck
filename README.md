@@ -94,6 +94,16 @@ No rebuilding, no waiting. Create → test → decide.
 
 The `@data` partition holds Documents, Downloads, Pictures, etc. It's bind-mounted into whichever overlay is active, so your files are always available regardless of which overlay you're testing.
 
+## APT Proxy Configuration
+
+`build-base.sh` and the installed apt proxy hook (`apt-proxy-detect`) look for an APT caching proxy in this order:
+
+1. `APT_PROXY_URL` environment variable (e.g. `APT_PROXY_URL=http://192.168.1.10:3142 ./build-base.sh`)
+2. `/etc/immutable-apt-proxy.conf` with an `APT_PROXY=` line
+3. mDNS/DNS auto-discovery of `apt-cacher-ng.local`, `apt-proxy.local`, or `proxy.local`
+
+If none are found, apt connects directly.
+
 ## How It Works
 
 - **@base** is a read-only BTRFS subvolume containing the base Pop!_OS system
