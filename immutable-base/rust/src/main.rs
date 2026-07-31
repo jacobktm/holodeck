@@ -3,6 +3,7 @@ mod boot;
 mod commands;
 mod config;
 mod mount;
+mod pty;
 
 use clap::{Parser, Subcommand};
 

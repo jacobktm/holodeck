@@ -1,22 +1,18 @@
 #!/bin/sh
 # Immutable-aware systemd-boot hook for kernel post-install.
-# Inside an overlay chroot: skip silently.
-# On the host: run normally.
+# Skips when not on a booted host (chroot, build-base).
 
 set -e
 
-# Detect chroot: compare root filesystem device/inode to /proc/1/root's
-ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
-REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
-if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
-    echo "immutable: skipping systemd-boot (running in chroot)"
+ESP_SRC=$(findmnt -no SOURCE /boot/efi 2>/dev/null || true)
+if ! [ "$(findmnt -no FSTYPE / 2>/dev/null)" = "overlay" ] || [ -z "$ESP_SRC" ] || [ ! -b "$ESP_SRC" ]; then
+    echo "immutable: skipping systemd-boot (not on booted host)"
     exit 0
 fi
 
 test -x /usr/bin/bootctl || exit 0
 bootctl is-installed --quiet || exit 0
 
-# ESP is mounted readonly per fstab — remount rw for kernel-install
 ESP="/boot/efi"
 RO_WAS=""
 if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then

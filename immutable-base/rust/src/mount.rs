@@ -94,6 +94,147 @@ pub fn mount_overlay_esp(ctx: &mut MountContext, overlay_root: &str) -> Result<(
     Ok(())
 }
 
+/// Bind-mount @data user directories, dotfiles, and immutable system data (hooks, CLI, etc.)
+/// into the overlay chroot. User files go under \$home; immutable files go under system paths.
+pub fn mount_data_dirs(ctx: &mut MountContext, data_path: &str, root: &str, username: &str) -> Result<(), String> {
+    if !std::path::Path::new(data_path).is_dir() {
+        return Ok(());
+    }
+
+    let home_dir = format!("{root}/home/{username}");
+
+    // ── User data directories ──
+
+    if !std::path::Path::new(&home_dir).is_dir() {
+        std::fs::create_dir_all(&home_dir)
+            .map_err(|e| format!("Failed to create {home_dir}: {e}"))?;
+    }
+
+    for dir in &["Documents", "Downloads", "Pictures", "Videos", "Music"] {
+        let src = format!("{data_path}/{dir}");
+        if !std::path::Path::new(&src).is_dir() {
+            continue;
+        }
+        let dst = format!("{home_dir}/{dir}");
+        std::fs::create_dir_all(&dst)
+            .map_err(|e| format!("Failed to create {dst}: {e}"))?;
+        let status = std::process::Command::new("mount")
+            .args(["--bind", &src, &dst])
+            .status()
+            .map_err(|e| format!("mount --bind {src} {dst} failed: {e}"))?;
+        if status.success() {
+            ctx.mounts.push(dst);
+        }
+    }
+
+    // ── Dotfiles ──
+
+    for file in &[".bash_history", ".profile", ".bashrc", ".gitconfig"] {
+        let src = format!("{data_path}/{file}");
+        if !std::path::Path::new(&src).is_file() {
+            continue;
+        }
+        let dst = format!("{home_dir}/{file}");
+        if let Some(parent) = std::path::Path::new(&dst).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !std::path::Path::new(&dst).exists() {
+            let _ = std::fs::write(&dst, "");
+        }
+        let status = std::process::Command::new("mount")
+            .args(["--bind", &src, &dst])
+            .status()
+            .map_err(|e| format!("mount --bind {src} {dst} failed: {e}"))?;
+        if status.success() {
+            ctx.mounts.push(dst);
+        }
+    }
+
+    // ── Immutable system data ──
+    // Replicates immutable-data-mount.service inside the chroot,
+    // so hooks, CLI, completions, and man page are the @data versions.
+
+    let imm_src = format!("{data_path}/immutable");
+    if !std::path::Path::new(&imm_src).is_dir() {
+        return Ok(());
+    }
+
+    // Hooks — bind-mount the entire hooks directory so immutable-hook-reinstall
+    // inside the chroot gets the latest @data versions.
+    let hooks_src = format!("{imm_src}/hooks");
+    let hooks_dst = format!("{root}/usr/lib/immutable/hooks");
+    if std::path::Path::new(&hooks_src).is_dir() {
+        std::fs::create_dir_all(&hooks_dst)
+            .map_err(|e| format!("Failed to create {hooks_dst}: {e}"))?;
+        let status = std::process::Command::new("mount")
+            .args(["--bind", &hooks_src, &hooks_dst])
+            .status()
+            .map_err(|e| format!("mount --bind {hooks_src} failed: {e}"))?;
+        if status.success() {
+            ctx.mounts.push(hooks_dst);
+        }
+    }
+
+    // CLI binary
+    let bin_src = format!("{imm_src}/bin/immutable");
+    let bin_dst = format!("{root}/usr/local/bin/immutable");
+    if std::path::Path::new(&bin_src).is_file() {
+        if let Some(parent) = std::path::Path::new(&bin_dst).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !std::path::Path::new(&bin_dst).exists() {
+            let _ = std::fs::write(&bin_dst, "");
+        }
+        let status = std::process::Command::new("mount")
+            .args(["--bind", &bin_src, &bin_dst])
+            .status()
+            .map_err(|e| format!("mount --bind {bin_src} failed: {e}"))?;
+        if status.success() {
+            ctx.mounts.push(bin_dst);
+        }
+    }
+
+    // Bash completions
+    let comp_src = format!("{imm_src}/bash-completion/immutable");
+    let comp_dst = format!("{root}/usr/share/bash-completion/completions/immutable");
+    if std::path::Path::new(&comp_src).is_file() {
+        if let Some(parent) = std::path::Path::new(&comp_dst).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !std::path::Path::new(&comp_dst).exists() {
+            let _ = std::fs::write(&comp_dst, "");
+        }
+        let status = std::process::Command::new("mount")
+            .args(["--bind", &comp_src, &comp_dst])
+            .status()
+            .map_err(|e| format!("mount --bind {comp_src} failed: {e}"))?;
+        if status.success() {
+            ctx.mounts.push(comp_dst);
+        }
+    }
+
+    // Man page
+    let man_src = format!("{imm_src}/man/immutable.1.gz");
+    let man_dst = format!("{root}/usr/share/man/man1/immutable.1.gz");
+    if std::path::Path::new(&man_src).is_file() {
+        if let Some(parent) = std::path::Path::new(&man_dst).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !std::path::Path::new(&man_dst).exists() {
+            let _ = std::fs::write(&man_dst, "");
+        }
+        let status = std::process::Command::new("mount")
+            .args(["--bind", &man_src, &man_dst])
+            .status()
+            .map_err(|e| format!("mount --bind {man_src} failed: {e}"))?;
+        if status.success() {
+            ctx.mounts.push(man_dst);
+        }
+    }
+
+    Ok(())
+}
+
 pub fn unmount_chroot(ctx: &MountContext) {
     for mount in ctx.mounts.iter().rev() {
         Command::new("umount")

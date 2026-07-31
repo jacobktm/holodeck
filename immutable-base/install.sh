@@ -143,7 +143,7 @@ echo "Extracting rootfs..."
 zstd -d "$ROOTFS_TAR" --stdout | tar -C "$MOUNT_POINT" -xf -
 
 mkdir -p "$MOUNT_POINT/boot/efi"
-mount "$PART_EFI" "$MOUNT_POINT/boot/efi"
+mount -o rw "$PART_EFI" "$MOUNT_POINT/boot/efi"
 
 # ── Encrypted swap (plain dm-crypt, auto-generated key like Pop!_OS) ──
 
@@ -226,6 +226,23 @@ if lspci 2>/dev/null | grep -qi nvidia; then
     NVIDIA_BOOT_OPTS="nvidia-drm.modeset=1"
 fi
 
+# ── Install immutable-aware hooks before any kernel packages ──
+# Must precede apt-get install so our hooks replace stock kernelstub/systemd-boot
+# hooks before they fire during kernel package postinst.
+
+HOOKS_SRC="$(dirname "$0")/hooks"
+reinstall_hooks() {
+    install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
+        "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
+    install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
+        "$MOUNT_POINT/etc/kernel/postinst.d/zz-systemd-boot"
+    install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
+        "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
+    install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
+        "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
+}
+reinstall_hooks
+
 # ── Install packages ──
 
 chroot "$MOUNT_POINT" dpkg --add-architecture i386
@@ -234,10 +251,25 @@ chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     initramfs-tools-core initramfs-tools \
     locales console-setup
 
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES
+# Pre-install kernelstub + systemd-boot separately so their stock hooks overwrite ours,
+# then we overwrite them back before the rest of HW_PACKAGES installs.
+# This prevents the stock kernelstub hook from firing during linux-image postinst.
+echo "Pre-installing kernelstub and systemd-boot..."
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    kernelstub systemd-boot || true
+reinstall_hooks
 
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y
+# Main package install — kernelstub already at desired version, hooks stay ours
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y $HW_PACKAGES || true
+
+# Reinstall hooks BEFORE dpkg --configure -a so any retries use our hooks
+reinstall_hooks
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true
+
+# Regenerate initramfs with hooks in final state
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive update-initramfs -u -k all 2>/dev/null || true
+
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y || true
 
 # ── fstab ──
 
@@ -259,16 +291,27 @@ echo "btrfs" >> "$MOUNT_POINT/etc/initramfs-tools/modules"
 echo "Installing systemd-boot..."
 chroot "$MOUNT_POINT" bootctl --path=/boot/efi install --no-variables
 
+# Create Pop_OS-UUID directory on ESP (kernelstub layout) and populate with kernel/initrd
+ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
+ESP_POP_DIR="$MOUNT_POINT/boot/efi/EFI/Pop_OS-${ROOT_UUID}"
+mkdir -p "$ESP_POP_DIR"
+KVER=$(ls "$MOUNT_POINT/boot/vmlinuz-"* 2>/dev/null | head -1 | sed 's|.*/vmlinuz-||')
+if [ -n "$KVER" ]; then
+    cp "$MOUNT_POINT/boot/vmlinuz-$KVER" "$ESP_POP_DIR/vmlinuz.efi"
+    cp "$MOUNT_POINT/boot/initrd.img-$KVER" "$ESP_POP_DIR/initrd.img"
+    echo "Copied kernel $KVER to ESP ($ESP_POP_DIR)"
+fi
+
+# Generate initramfs (post-update hooks copy initrd to the now-existing Pop_OS-UUID/)
+echo "Generating initramfs..."
+chroot "$MOUNT_POINT" update-initramfs -c -k all
+
 # Create UEFI boot entry
 echo "Creating UEFI boot entry..."
 chroot "$MOUNT_POINT" efibootmgr --create \
     --disk "$TARGET_DEVICE" --part 1 \
     --write-signature --label "Pop!_OS" \
     --loader '\EFI\systemd\systemd-bootx64.efi' || echo "WARNING: efibootmgr failed"
-
-# Regenerate initramfs (triggers zz-kernelstub which copies kernel/initrd to ESP)
-echo "Generating initramfs..."
-chroot "$MOUNT_POINT" update-initramfs -c -k all
 
 # ── Clean up stale boot entries from live ISO ──
 
@@ -443,16 +486,6 @@ done
 
 install -Dm755 "$HOOKS_SRC/immutable-hook-reinstall" \
     "$MOUNT_POINT/pool/@data/immutable/hooks/immutable-hook-reinstall"
-
-# Install active hooks into @base (these get overwritten by reinstall in overlays)
-install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-kernelstub" \
-    "$MOUNT_POINT/etc/kernel/postinst.d/zz-kernelstub"
-install -Dm755 "$HOOKS_SRC/kernel-postinst.d/zz-systemd-boot" \
-    "$MOUNT_POINT/etc/kernel/postinst.d/zz-systemd-boot"
-install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/zz-kernelstub" \
-    "$MOUNT_POINT/etc/initramfs/post-update.d/zz-kernelstub"
-install -Dm755 "$HOOKS_SRC/initramfs-post-update.d/systemd-boot" \
-    "$MOUNT_POINT/etc/initramfs/post-update.d/systemd-boot"
 
 install -Dm644 "$HOOKS_SRC/dpkg-immutable" \
     "$MOUNT_POINT/etc/dpkg/dpkg.cfg.d/99-immutable"

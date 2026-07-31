@@ -1,5 +1,5 @@
 use std::path::Path;
-use crate::{btrfs, boot, config, mount};
+use crate::{btrfs, boot, config, mount, pty};
 
 const SYSTEM_OVERLAYS: &[&str] = &["init", "recovery"];
 
@@ -511,10 +511,6 @@ fn forwarded_env_vars() -> Vec<(String, String)> {
         .collect()
 }
 
-fn build_env_args(envs: &[(String, String)]) -> Vec<String> {
-    envs.iter().map(|(k, v)| format!("{k}={v}")).collect()
-}
-
 pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     let cfg = cfg();
     ensure_pool(&cfg)?;
@@ -533,9 +529,11 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
 
     use std::io::IsTerminal;
 
-    // Mount chroot then bind-mount overlay's own ESP copy (guard ensures cleanup on all paths)
+    // Mount chroot, overlay ESP copy, and @data user directories into home
     let mut ctx = mount::mount_chroot(&root)?;
     let _ = mount::mount_overlay_esp(&mut ctx, &root);
+    let data_path = format!("{}/{}", cfg.pool, cfg.data_subvol);
+    let _ = mount::mount_data_dirs(&mut ctx, &data_path, &root, &cfg.username);
     let _guard = mount::MountGuard::new(ctx);
 
     let mut envs = forwarded_env_vars();
@@ -563,35 +561,29 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    // Interactive: allocate PTY via script(1)
-    // Pass env vars through sudo's KEY=val syntax (survives env_reset)
-    let env_args = build_env_args(&envs);
-    let env_prefix = if env_args.is_empty() {
-        String::new()
-    } else {
-        format!("{} ", env_args.join(" "))
-    };
-
+    // Interactive: allocate PTY natively so sudo inside the chroot can prompt
+    // on the real terminal (e.g. for password entry)
+    let env_strings: Vec<String> = envs.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
     let shell_cmd = if args.is_empty() {
-        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash -c 'cd ~ && exec /bin/bash --login'", cfg.username)
+        "cd ~ && exec /bin/bash --login".to_string()
     } else {
-        let joined: Vec<String> = args.iter().map(|a| {
-            if a.contains(' ') {
-                format!("'{a}'")
-            } else {
-                a.clone()
-            }
-        }).collect();
-        format!("chroot {root} sudo {env_prefix}-u {} /bin/bash --login -c 'cd ~ && {}'", cfg.username, joined.join(" "))
+        format!("cd ~ && {}", args.join(" "))
     };
+    let mut cmd_args: Vec<&str> = vec!["chroot", &root, "sudo"];
+    for es in &env_strings {
+        cmd_args.push(es);
+    }
+    cmd_args.push("-u");
+    cmd_args.push(&cfg.username);
+    cmd_args.push("/bin/bash");
+    cmd_args.push("-c");
+    cmd_args.push(&shell_cmd);
 
-    let status = std::process::Command::new("script")
-        .args(["-q", "-c", &shell_cmd, "/dev/null"])
-        .status()
-        .map_err(|e| format!("script failed: {e}"))?;
-
-    if !status.success() {
-        return Err("Shell exited with error".to_string());
+    let status = pty::spawn_pty(&cmd_args)?;
+    if status != 0 {
+        return Err(format!("Command exited with status {status}"));
     }
     Ok(())
 }

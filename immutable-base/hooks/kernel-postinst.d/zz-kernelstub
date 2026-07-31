@@ -1,8 +1,7 @@
 #!/bin/bash
 # Immutable-aware kernelstub replacement for kernel post-install.
-# Runs kernelstub on the host; copies files directly in chroot.
-# On both paths, syncs kernelstub kernel_options into immutable.conf
-# so NVIDIA and other driver options persist in the boot entry.
+# Runs kernelstub when /boot/efi is a real block device AND / is a mountpoint
+# (booted overlay), otherwise copies files directly (chroot contexts).
 
 sync_back_to_overlay() {
     local subvol
@@ -17,7 +16,6 @@ sync_back_to_overlay() {
     rsync -a --delete /boot/efi/ "$overlay_esp/" 2>/dev/null || true
 }
 
-# Read kernel_options from kernelstub config, space-separated
 read_kernelstub_opts() {
     local config_file="/etc/kernelstub/configuration"
     if [ -f "$config_file" ]; then
@@ -35,8 +33,6 @@ except Exception:
     echo "quiet splash"
 }
 
-# Merge kernelstub options into immutable.conf's options line.
-# Preserves root=, ro, and rootflags= while adding any missing options.
 sync_immutable_conf_opts() {
     local conf_path="$1"
     local ks_opts="$2"
@@ -46,11 +42,8 @@ sync_immutable_conf_opts() {
     line=$(grep '^options ' "$conf_path" 2>/dev/null || true)
     [ -n "$line" ] || return 0
 
-    # Extract parts of the current options line to preserve
     local root_uuid="" ro_flag="" rootflags=""
     local current_opts=""
-
-    # Parse the line: "options [options...]"
     local rest="${line#options }"
     local parts=()
     read -ra parts <<< "$rest"
@@ -73,7 +66,6 @@ sync_immutable_conf_opts() {
     done
     current_opts="${current_opts# }"
 
-    # Add any kernelstub options not already present
     local ks_parts=()
     read -ra ks_parts <<< "$ks_opts"
     for opt in "${ks_parts[@]}"; do
@@ -92,13 +84,10 @@ sync_immutable_conf_opts() {
     done
     current_opts="${current_opts# }"
 
-    # Reconstruct: root=UUID=xxx ro [opts] rootflags=subvol=xxx
     local new_opts="$root_uuid ro $current_opts $rootflags"
-    # Remove duplicate spaces
     new_opts=$(echo "$new_opts" | tr -s ' ' | sed 's/[[:space:]]*$//')
     new_opts="${new_opts# }"
 
-    # Write updated immutable.conf
     local linux_line initrd_line
     linux_line=$(grep '^linux ' "$conf_path" 2>/dev/null || true)
     initrd_line=$(grep '^initrd ' "$conf_path" 2>/dev/null || true)
@@ -126,17 +115,33 @@ find_esp_dir() {
     return 1
 }
 
-# --- chroot detection ---
-ROOT_DEV=$(stat -c '%d:%i' / 2>/dev/null)
-REAL_ROOT_DEV=$(stat -c '%d:%i' "$(readlink -f /proc/1/root)" 2>/dev/null)
+# --- Environment detection ---
+ESP_SRC=$(findmnt -no SOURCE /boot/efi 2>/dev/null || true)
 
-if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
-    # Inside overlay shell (chroot) — replicate kernelstub's ESP operations
+if [ -n "$ESP_SRC" ] && [ -b "$ESP_SRC" ] && [ "$(findmnt -no FSTYPE / 2>/dev/null)" = "overlay" ]; then
+    # Host path: booted overlay — run kernelstub
     ESP="/boot/efi"
-    if ! mountpoint -q "$ESP" 2>/dev/null; then
-        exit 0
+
+    RO_WAS=""
+    if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+        RO_WAS=1
+        mount -o remount,rw "$ESP" 2>/dev/null || exit 0
     fi
 
+    INITRD="/boot/initrd.img-$1"
+    KERNEL="$2"
+
+    kernelstub --verbose --preserve-live-mode || true
+
+    KS_OPTS=$(read_kernelstub_opts)
+    sync_immutable_conf_opts "${ESP}/loader/entries/immutable.conf" "$KS_OPTS"
+
+    sync_back_to_overlay
+
+    [ -n "$RO_WAS" ] && mount -o remount,ro "$ESP" 2>/dev/null || true
+elif mountpoint -q /boot/efi 2>/dev/null; then
+    # Chroot path: /boot/efi is mounted (install.sh block device or overlay shell bind)
+    ESP="/boot/efi"
     ESP_DIR=$(find_esp_dir "$ESP")
     [ -n "$ESP_DIR" ] || exit 0
 
@@ -145,7 +150,6 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     [ -f "$KERNEL_SRC" ] || exit 0
     [ -f "$INITRD_SRC" ] || exit 0
 
-    # Save previous kernel/initrd BEFORE overwriting (kernelstub's backup_old)
     if [ -f "${ESP_DIR}/vmlinuz.efi" ]; then
         rm -f "${ESP_DIR}/vmlinuz-previous.efi" 2>/dev/null || true
         cp "${ESP_DIR}/vmlinuz.efi" "${ESP_DIR}/vmlinuz-previous.efi" 2>/dev/null || true
@@ -155,7 +159,6 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
         cp "${ESP_DIR}/initrd.img" "${ESP_DIR}/initrd.img-previous" 2>/dev/null || true
     fi
 
-    # Copy new kernel (decompress if gzip'd, matching kernelstub behavior)
     if [ "$(xxd -l 2 -p "$KERNEL_SRC" 2>/dev/null)" = "1f8b" ]; then
         gunzip -c "$KERNEL_SRC" > "${ESP_DIR}/vmlinuz.efi" 2>/dev/null || \
         cp "$KERNEL_SRC" "${ESP_DIR}/vmlinuz.efi" 2>/dev/null || true
@@ -164,35 +167,10 @@ if [ "$ROOT_DEV" != "$REAL_ROOT_DEV" ]; then
     fi
 
     cp "$INITRD_SRC" "${ESP_DIR}/initrd.img" 2>/dev/null || true
-
-    # Copy /proc/cmdline to ESP (kernelstub does this)
     cp /proc/cmdline "${ESP_DIR}/cmdline" 2>/dev/null || true
 
-    # Sync kernelstub options into immutable.conf (NVIDIA, etc.)
     KS_OPTS=$(read_kernelstub_opts)
     sync_immutable_conf_opts "${ESP}/loader/entries/immutable.conf" "$KS_OPTS"
 
     exit 0
 fi
-
-# --- host path ---
-ESP="/boot/efi"
-
-RO_WAS=""
-if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
-    RO_WAS=1
-    mount -o remount,rw "$ESP" 2>/dev/null || exit 0
-fi
-
-INITRD="/boot/initrd.img-$1"
-KERNEL="$2"
-
-kernelstub --verbose --preserve-live-mode || true
-
-# Sync kernelstub options into immutable.conf on the real ESP
-KS_OPTS=$(read_kernelstub_opts)
-sync_immutable_conf_opts "${ESP}/loader/entries/immutable.conf" "$KS_OPTS"
-
-sync_back_to_overlay
-
-[ -n "$RO_WAS" ] && mount -o remount,ro "$ESP" 2>/dev/null || true
