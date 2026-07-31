@@ -18,13 +18,27 @@ See [COSMIC-TESTING.md](COSMIC-TESTING.md) for a guide to using this system for 
 
 ## Quick Start
 
+### 0. Get the code
+
+```bash
+git clone https://github.com/jacobktm/holodeck.git
+cd holodeck
+```
+
+Prerequisites: a UEFI system, a spare disk, root access, and
+`debootstrap zstd btrfs-progs parted dosfstools`
+(`sudo apt install debootstrap zstd btrfs-progs parted dosfstools`).
+
 ### 1. Build the base rootfs
 
 ```bash
 sudo ./build-base.sh
 ```
 
-This creates a compressed rootfs tarball at `/tmp/immutable-build/base-rootfs.tar.zst`.
+This creates a compressed rootfs tarball at
+`/tmp/immutable-build/base-rootfs.tar.zst` (override the location with the
+`BUILD_DIR` env var; on a live ISO without `/tmp` a writable directory is
+picked automatically).
 
 ### 2. Install to disk
 
@@ -33,6 +47,8 @@ sudo ./install.sh --device /dev/sdX
 ```
 
 **WARNING: This erases all data on the target disk.**
+The installer prompts for the username and password to create (or pass
+`--username`/`--password`).
 
 ### 3. Boot and use
 

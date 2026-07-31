@@ -11,6 +11,70 @@ upgrade` can leave you without a usable session. With btrfs overlays you can:
 - Promote it to your boot system only if it works
 - Roll back instantly if it doesn't
 
+## Getting the code
+
+```bash
+git clone https://github.com/jacobktm/holodeck.git
+cd holodeck
+```
+
+## Installing the system
+
+The prototype installs an immutable Pop!_OS base onto its own disk. It
+targets UEFI systems (systemd-boot); there is no BIOS/GRUB support.
+
+Prerequisites — run from a Pop!_OS live USB or any Debian/Ubuntu-based system:
+
+- a spare disk to erase (`--device /dev/sdX` — **destructive**)
+- root access (the build and install scripts must run with `sudo`)
+- tools: `debootstrap`, `zstd`, `btrfs-progs`, `parted`, `dosfstools`
+
+```bash
+sudo apt install debootstrap zstd btrfs-progs parted dosfstools
+```
+
+### 1. Build the base rootfs
+
+```bash
+sudo ./build-base.sh
+```
+
+Downloads and configures a minimal Pop!_OS (`noble`) rootfs, installs the
+immutable hooks and CLI, and packages it to
+`/tmp/immutable-build/base-rootfs.tar.zst`. Set `BUILD_DIR` to relocate the
+output; on a live ISO where `/tmp` is missing, the script automatically falls
+back to a writable location. If Rust with the `x86_64-unknown-linux-musl`
+target is available, the static `immutable` CLI is built into the rootfs;
+otherwise the script warns and continues.
+
+### 2. Install to disk
+
+```bash
+sudo ./install.sh --device /dev/sdX
+```
+
+Creates a GPT layout (ESP, encrypted swap, BTRFS), extracts the rootfs into
+`@base`, snapshots it into `@overlay-init` and `@overlay-recovery`, creates
+`@data`, installs systemd-boot, and prompts for your username and password
+(override with `--username`/`--password`). It also accepts `--swap SIZE` and
+`--rootfs PATH`. **This erases the target disk.**
+
+### 3. First boot
+
+Boot into the installed system. You land in `@overlay-init`; verify the
+pieces are in place:
+
+```bash
+immutable list     # @overlay-init and @overlay-recovery present
+immutable status
+```
+
+If the install doesn't boot (missing firmware modules, etc.), boot from
+`@overlay-recovery` via systemd-boot and re-run
+`sudo immutable update-initramfs`.
+
+From here, follow the core loop below to snapshot and test COSMIC packages.
+
 ## How overlays map to testing
 
 ```
