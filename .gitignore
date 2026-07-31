@@ -1,29 +1,12 @@
+# Rust build artifacts
+/target/
+
 # Python
 __pycache__/
 *.pyc
-*.pyo
 
-# Virtual environment
-.venv/
-
-# Docker (generated at runtime, never committed)
-.docker/
-
-# Old shell scripts replaced by Python (kept locally for reference)
-lib/build-image.sh
-lib/cgroup-session.sh
-lib/container-status.sh
-lib/daemon-lifecycle.sh
-lib/parse-config.sh
-lib/udev-fix.sh
-
-# Legacy files
-diagnostics.sh
-test.sh
-install_docker.sh
-
-# Signal files (runtime state)
-*.signal
+# Build outputs
+base-rootfs.tar.zst
 
 # Editor / OS
 *.swp
@@ -33,4 +16,3 @@ install_docker.sh
 .idea/
 .DS_Store
 Thumbs.db
-base-rootfs.tar.zst
