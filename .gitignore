@@ -1,5 +1,7 @@
 # Rust build artifacts
 /target/
+/rust/target/
+/immutable
 
 # Python
 __pycache__/

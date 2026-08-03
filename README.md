@@ -40,7 +40,18 @@ This creates a compressed rootfs tarball at
 `BUILD_DIR` env var; on a live ISO without `/tmp` a writable directory is
 picked automatically).
 
-### 2. Install to disk
+### 2. Build the immutable CLI
+
+```bash
+./build-rust.sh
+```
+
+Compiles the Rust `immutable` CLI and copies it to `./immutable` in the repo
+root. **`install.sh` requires this binary** (it errors out without it). Note
+that while `build-base.sh` also builds the CLI into the rootfs when Rust is
+available, the installer needs a copy at the repo root.
+
+### 3. Install to disk
 
 ```bash
 sudo ./install.sh --device /dev/sdX
@@ -50,7 +61,7 @@ sudo ./install.sh --device /dev/sdX
 The installer prompts for the username and password to create (or pass
 `--username`/`--password`).
 
-### 3. Boot and use
+### 4. Boot and use
 
 After rebooting into the new system:
 

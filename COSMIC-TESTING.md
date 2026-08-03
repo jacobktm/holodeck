@@ -47,7 +47,18 @@ back to a writable location. If Rust with the `x86_64-unknown-linux-musl`
 target is available, the static `immutable` CLI is built into the rootfs;
 otherwise the script warns and continues.
 
-### 2. Install to disk
+### 2. Build the immutable CLI
+
+```bash
+./build-rust.sh
+```
+
+Compiles the Rust `immutable` CLI and copies it to `./immutable` at the repo
+root. **`install.sh` requires this binary** and will refuse to run without it.
+The CLI built here is what `install.sh` copies into `@data` and `@base`; the
+static-musl build from `build-base.sh` is only a fallback inside the rootfs.
+
+### 3. Install to disk
 
 ```bash
 sudo ./install.sh --device /dev/sdX
@@ -59,7 +70,7 @@ Creates a GPT layout (ESP, encrypted swap, BTRFS), extracts the rootfs into
 (override with `--username`/`--password`). It also accepts `--swap SIZE` and
 `--rootfs PATH`. **This erases the target disk.**
 
-### 3. First boot
+### 4. First boot
 
 Boot into the installed system. You land in `@overlay-init`; verify the
 pieces are in place:
