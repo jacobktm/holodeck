@@ -14,6 +14,43 @@ SWAP_SIZE="8G"
 die() { echo "ERROR: $*" >&2; exit 1; }
 confirm() { read -p "$1 [y/N]: " -n 1 -r; echo; [[ $REPLY =~ ^[Yy]$ ]]; }
 
+# Detect an APT proxy, in order of precedence (same as build-base.sh):
+#   1. $APT_PROXY_URL environment variable
+#   2. /etc/immutable-apt-proxy.conf (APT_PROXY=... line, same file the
+#      installed apt-proxy-detect hook reads)
+#   3. mDNS/DNS auto-discovery of common apt-cacher-ng hostnames
+# No proxy is configured if none are found.
+detect_apt_proxy() {
+    local url name ip
+
+    if [ -n "${APT_PROXY_URL:-}" ]; then
+        echo "$APT_PROXY_URL"
+        return
+    fi
+
+    if [ -f /etc/immutable-apt-proxy.conf ]; then
+        url=$(grep -oP '^APT_PROXY=\K.*' /etc/immutable-apt-proxy.conf 2>/dev/null || true)
+        if [ -n "$url" ]; then
+            echo "$url"
+            return
+        fi
+    fi
+
+    for name in apt-cacher-ng.local apt-proxy.local proxy.local; do
+        ip=$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | head -1)
+        [ -z "$ip" ] && continue
+        if timeout 2 bash -c "echo > /dev/tcp/${ip}/3142" 2>/dev/null; then
+            echo "http://$ip:3142"
+            return
+        fi
+    done
+
+    echo ""
+}
+
+APT_PROXY="$(detect_apt_proxy)"
+[ -n "$APT_PROXY" ] && echo "APT proxy detected: $APT_PROXY"
+
 usage() {
     cat <<EOF
 install.sh v${VERSION} — Install immutable Pop!_OS to disk
@@ -245,6 +282,13 @@ reinstall_hooks
 
 # ── Install packages ──
 
+# Temporary proxy for install speed — removed before finishing so the
+# installed system relies on the apt-proxy-detect hook instead.
+if [ -n "$APT_PROXY" ]; then
+    mkdir -p "$MOUNT_POINT/etc/apt/apt.conf.d"
+    echo "Acquire::http::Proxy \"$APT_PROXY\";" > "$MOUNT_POINT/etc/apt/apt.conf.d/99proxy"
+fi
+
 chroot "$MOUNT_POINT" dpkg --add-architecture i386
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get update -y
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -270,6 +314,9 @@ chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || 
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive update-initramfs -u -k all 2>/dev/null || true
 
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -f -y || true
+
+# Remove temporary proxy — installed system uses auto-detect
+rm -f "$MOUNT_POINT/etc/apt/apt.conf.d/99proxy"
 
 # ── fstab ──
 

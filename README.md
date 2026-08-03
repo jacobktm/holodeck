@@ -114,8 +114,8 @@ The `@data` partition holds Documents, Downloads, Pictures, etc. It's bind-mount
 
 `build-base.sh` and the installed apt proxy hook (`apt-proxy-detect`) look for an APT caching proxy in this order:
 
-1. `APT_PROXY_URL` environment variable (e.g. `APT_PROXY_URL=http://192.168.1.10:3142 ./build-base.sh`)
-2. `/etc/immutable-apt-proxy.conf` with an `APT_PROXY=` line
+1. `APT_PROXY_URL` environment variable (e.g. `sudo env APT_PROXY_URL=http://192.168.1.10:3142 ./build-base.sh` — note `sudo` resets the environment, so the variable must be set via `env` after elevation)
+2. `/etc/immutable-apt-proxy.conf` with an `APT_PROXY=` line (recommended — the installed system's apt hook reads this same file)
 3. mDNS/DNS auto-discovery of `apt-cacher-ng.local`, `apt-proxy.local`, or `proxy.local`
 
 If none are found, apt connects directly.
