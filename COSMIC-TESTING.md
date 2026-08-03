@@ -27,10 +27,11 @@ Prerequisites — run from a Pop!_OS live USB or any Debian/Ubuntu-based system:
 
 - a spare disk to erase (`--device /dev/sdX` — **destructive**)
 - root access (the build and install scripts must run with `sudo`)
-- tools: `debootstrap`, `zstd`, `btrfs-progs`, `parted`, `dosfstools`
+- tools: `debootstrap`, `zstd`, `btrfs-progs`, `parted`, `dosfstools`,
+  `cryptsetup` (only needed if you enable encryption)
 
 ```bash
-sudo apt install debootstrap zstd btrfs-progs parted dosfstools
+sudo apt install debootstrap zstd btrfs-progs parted dosfstools cryptsetup
 ```
 
 ### 1. Build the base rootfs
@@ -67,8 +68,10 @@ sudo ./install.sh --device /dev/sdX
 Creates a GPT layout (ESP, encrypted swap, BTRFS), extracts the rootfs into
 `@base`, snapshots it into `@overlay-init` and `@overlay-recovery`, creates
 `@data`, installs systemd-boot, and prompts for your username and password
-(override with `--username`/`--password`). It also accepts `--swap SIZE` and
-`--rootfs PATH`. **This erases the target disk.**
+(override with `--username`/`--password`). It also asks whether to encrypt
+the root filesystem with LUKS — answer no by default, or pass `--encrypt` for
+full-disk encryption (root + swap; the ESP stays unencrypted). It also
+accepts `--swap SIZE` and `--rootfs PATH`. **This erases the target disk.**
 
 ### 4. First boot
 

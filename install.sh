@@ -64,6 +64,7 @@ Options:
   --swap SIZE         Swap size (default: $SWAP_SIZE)
   --username NAME     Username to create (prompted if omitted)
   --password PASS     User password (prompted if omitted)
+  --encrypt           Encrypt the root filesystem with LUKS (default: no)
   --help              Show this help
 
 This will ERASE ALL DATA on the target disk.
@@ -75,6 +76,7 @@ EOF
 TARGET_DEVICE=""
 USERNAME=""
 PASSWORD=""
+ENCRYPT=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -83,6 +85,7 @@ while [ $# -gt 0 ]; do
         --swap) SWAP_SIZE="$2"; shift 2 ;;
         --username) USERNAME="$2"; shift 2 ;;
         --password) PASSWORD="$2"; shift 2 ;;
+        --encrypt) ENCRYPT=1 ;;
         --help|-h) usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -117,6 +120,16 @@ lsblk "$TARGET_DEVICE" 2>/dev/null || true
 echo ""
 echo "WARNING: This will ERASE ALL DATA on $TARGET_DEVICE"
 confirm "Continue?" || exit 1
+
+# Ask about encryption unless overridden by --encrypt (default: no)
+if [ "$ENCRYPT" -eq 0 ]; then
+    confirm "Encrypt the root filesystem with LUKS?" && ENCRYPT=1
+fi
+if [ "$ENCRYPT" -eq 1 ]; then
+    echo "Full-disk encryption: ENABLED (root + swap encrypted)"
+else
+    echo "Full-disk encryption: disabled"
+fi
 
 for mnt in $(mount | grep "$TARGET_DEVICE" | awk '{print $3}' | sort -r); do
     umount "$mnt" 2>/dev/null || true
@@ -157,12 +170,26 @@ echo "EFI: $PART_EFI  Swap: $PART_SWAP  Root: $PART_ROOT"
 # ── Format ──
 
 mkfs.fat -F32 -n EFI "$PART_EFI"
-mkfs.btrfs -f -L immutable "$PART_ROOT"
+
+ROOT_DEV="$PART_ROOT"
+LUKS_UUID=""
+if [ "$ENCRYPT" -eq 1 ]; then
+    echo "Setting up LUKS2 encryption on $PART_ROOT..."
+    cryptsetup -s 512 luksFormat --type luks2 "$PART_ROOT"
+    cryptsetup open "$PART_ROOT" immutable-crypt
+    ROOT_DEV="/dev/mapper/immutable-crypt"
+    LUKS_UUID=$(blkid -s UUID -o value "$PART_ROOT")
+    echo "LUKS container UUID: $LUKS_UUID"
+fi
+
+mkfs.btrfs -f -L immutable "$ROOT_DEV"
+ROOT_FS_UUID=$(blkid -s UUID -o value "$ROOT_DEV")
+echo "Btrfs filesystem UUID: $ROOT_FS_UUID"
 
 # ── BTRFS subvolumes ──
 
 mkdir -p "$MOUNT_POINT"
-mount "$PART_ROOT" "$MOUNT_POINT"
+mount "$ROOT_DEV" "$MOUNT_POINT"
 
 btrfs subvolume create "$MOUNT_POINT/@data"
 btrfs subvolume create "$MOUNT_POINT/@snapshots"
@@ -180,7 +207,7 @@ umount "$MOUNT_POINT"
 
 # ── Extract rootfs into @base ──
 
-mount -o subvol=@base "$PART_ROOT" "$MOUNT_POINT"
+mount -o subvol=@base "$ROOT_DEV" "$MOUNT_POINT"
 
 echo "Extracting rootfs..."
 zstd -d "$ROOTFS_TAR" --stdout | tar -C "$MOUNT_POINT" -xf -
@@ -193,6 +220,11 @@ mount -o rw "$PART_EFI" "$MOUNT_POINT/boot/efi"
 mkswap -L swap "$PART_SWAP"
 SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
 echo "cryptswap UUID=$SWAP_UUID /dev/urandom swap,plain,offset=1024,cipher=aes-xts-plain64,size=512" >> "$MOUNT_POINT/etc/crypttab"
+
+# LUKS root — initramfs prompts for the passphrase at boot (matches Pop!_OS)
+if [ "$ENCRYPT" -eq 1 ]; then
+    echo "immutable-crypt UUID=$LUKS_UUID none luks" >> "$MOUNT_POINT/etc/crypttab"
+fi
 
 # ── Chroot setup ──
 
@@ -303,9 +335,11 @@ fi
 
 chroot "$MOUNT_POINT" dpkg --add-architecture i386
 chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get update -y
-chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    initramfs-tools-core initramfs-tools \
-    locales console-setup
+CHROOT_PKGS="initramfs-tools-core initramfs-tools locales console-setup"
+if [ "$ENCRYPT" -eq 1 ]; then
+    CHROOT_PKGS="$CHROOT_PKGS cryptsetup cryptsetup-initramfs"
+fi
+chroot "$MOUNT_POINT" env DEBIAN_FRONTEND=noninteractive apt-get install -y $CHROOT_PKGS
 
 # Pre-install kernelstub + systemd-boot separately so their stock hooks overwrite ours,
 # then we overwrite them back before the rest of HW_PACKAGES installs.
@@ -332,13 +366,12 @@ rm -f "$MOUNT_POINT/etc/apt/apt.conf.d/99proxy"
 
 # ── fstab ──
 
-ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
 EFI_UUID=$(blkid -s UUID -o value "$PART_EFI")
 SWAP_UUID=$(blkid -s UUID -o value "$PART_SWAP")
 
 cat > "$MOUNT_POINT/etc/fstab" <<FSTAB
-UUID=$ROOT_UUID  /            btrfs  defaults,noatime,compress=zstd:1,ssd,subvol=@overlay-init  0 0
-UUID=$ROOT_UUID  /pool        btrfs  defaults,noatime,subvolid=5                                0 0
+UUID=$ROOT_FS_UUID  /            btrfs  defaults,noatime,compress=zstd:1,ssd,subvol=@overlay-init  0 0
+UUID=$ROOT_FS_UUID  /pool        btrfs  defaults,noatime,subvolid=5                                0 0
 UUID=$EFI_UUID   /boot/efi    vfat   defaults,noatime,fmask=0022,dmask=0022,codepage=437,ro        0 2
 /dev/mapper/cryptswap  none  swap   sw                                                          0 0
 FSTAB
@@ -351,8 +384,7 @@ echo "Installing systemd-boot..."
 chroot "$MOUNT_POINT" bootctl --path=/boot/efi install --no-variables
 
 # Create Pop_OS-UUID directory on ESP (kernelstub layout) and populate with kernel/initrd
-ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
-ESP_POP_DIR="$MOUNT_POINT/boot/efi/EFI/Pop_OS-${ROOT_UUID}"
+ESP_POP_DIR="$MOUNT_POINT/boot/efi/EFI/Pop_OS-${ROOT_FS_UUID}"
 mkdir -p "$ESP_POP_DIR"
 KVER=$(ls "$MOUNT_POINT/boot/vmlinuz-"* 2>/dev/null | head -1 | sed 's|.*/vmlinuz-||')
 if [ -n "$KVER" ]; then
@@ -389,10 +421,9 @@ cd - >/dev/null
 # ── Ensure correct kernelstub boot entry exists ──
 
 echo "Configuring boot entry..."
-ROOT_UUID=$(blkid -s UUID -o value "$PART_ROOT")
 
 # Build kernel options
-KERNEL_OPTS="root=UUID=$ROOT_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-init"
+KERNEL_OPTS="root=UUID=$ROOT_FS_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-init"
 if [ -n "$NVIDIA_BOOT_OPTS" ]; then
     KERNEL_OPTS="$KERNEL_OPTS $NVIDIA_BOOT_OPTS"
 fi
@@ -412,8 +443,8 @@ if [ -d "$ESP_ENTRIES" ]; then
     # Create clean entry
     cat > "$ESP_ENTRIES/Pop_OS-current.conf" <<ENTRY
 title Pop!_OS
-linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
-initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
+linux /EFI/Pop_OS-${ROOT_FS_UUID}/vmlinuz.efi
+initrd /EFI/Pop_OS-${ROOT_FS_UUID}/initrd.img
 options ${KERNEL_OPTS}
 ENTRY
     echo "Created: $ESP_ENTRIES/Pop_OS-current.conf"
@@ -424,26 +455,26 @@ fi
 if [ -d "$ESP_ENTRIES" ]; then
     cat > "$ESP_ENTRIES/immutable.conf" <<ENTRY
 title Immutable (overlay-init)
-linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
-initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
-options root=UUID=$ROOT_UUID ro quiet loglevel=0 systemd.show_status=false splash rootflags=subvol=@overlay-init ${NVIDIA_BOOT_OPTS}
+linux /EFI/Pop_OS-${ROOT_FS_UUID}/vmlinuz.efi
+initrd /EFI/Pop_OS-${ROOT_FS_UUID}/initrd.img
+options root=UUID=$ROOT_FS_UUID ro quiet loglevel=0 systemd.show_status=false splash rootflags=subvol=@overlay-init ${NVIDIA_BOOT_OPTS}
 ENTRY
     echo "Created: $ESP_ENTRIES/immutable.conf"
 
     # Recovery boot entry — boots @overlay-recovery as fallback
     cat > "$ESP_ENTRIES/recovery.conf" <<ENTRY
 title Pop!_OS Recovery
-linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz.efi
-initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img
-options root=UUID=$ROOT_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-recovery ${NVIDIA_BOOT_OPTS}
+linux /EFI/Pop_OS-${ROOT_FS_UUID}/vmlinuz.efi
+initrd /EFI/Pop_OS-${ROOT_FS_UUID}/initrd.img
+options root=UUID=$ROOT_FS_UUID ro quiet splash loglevel=0 systemd.show_status=false rootflags=subvol=@overlay-recovery ${NVIDIA_BOOT_OPTS}
 ENTRY
     echo "Created: $ESP_ENTRIES/recovery.conf"
 
     # Previous kernel boot entry — safety net for kernel updates
     cat > "$ESP_ENTRIES/previous.conf" <<ENTRY
 title Pop!_OS (previous kernel)
-linux /EFI/Pop_OS-${ROOT_UUID}/vmlinuz-previous.efi
-initrd /EFI/Pop_OS-${ROOT_UUID}/initrd.img-previous
+linux /EFI/Pop_OS-${ROOT_FS_UUID}/vmlinuz-previous.efi
+initrd /EFI/Pop_OS-${ROOT_FS_UUID}/initrd.img-previous
 options ${KERNEL_OPTS}
 ENTRY
     echo "Created: $ESP_ENTRIES/previous.conf"
@@ -493,7 +524,7 @@ ls -la "$MOUNT_POINT/boot/efi/loader/entries/" 2>/dev/null || true
 # ── Mount pool to access @data for CLI installation ──
 
 mkdir -p "$MOUNT_POINT/pool"
-mount -o subvolid=5 "$PART_ROOT" "$MOUNT_POINT/pool"
+mount -o subvolid=5 "$ROOT_DEV" "$MOUNT_POINT/pool"
 
 # ── Install immutable CLI to @data (shared across all overlays) ──
 
@@ -644,7 +675,7 @@ umount "$MOUNT_POINT/boot/efi" 2>/dev/null || true
 umount "$MOUNT_POINT/pool" 2>/dev/null || true
 umount "$MOUNT_POINT" 2>/dev/null || true
 
-mount -o subvol=@base "$PART_ROOT" "$MOUNT_POINT"
+mount -o subvol=@base "$ROOT_DEV" "$MOUNT_POINT"
 btrfs property set "$MOUNT_POINT" ro true
 umount "$MOUNT_POINT"
 
@@ -653,7 +684,7 @@ echo "@base locked (read-only)"
 # ── Snapshot @base → @overlay-init and @overlay-recovery ──
 
 mkdir -p "$MOUNT_POINT"
-mount "$PART_ROOT" "$MOUNT_POINT"
+mount "$ROOT_DEV" "$MOUNT_POINT"
 
 btrfs subvolume snapshot "$MOUNT_POINT/@base" "$MOUNT_POINT/@overlay-init"
 btrfs subvolume snapshot "$MOUNT_POINT/@base" "$MOUNT_POINT/@overlay-recovery"
@@ -666,6 +697,11 @@ echo "0" > "$MOUNT_POINT/@data/boot-counter"
 echo "@overlay-init" > "$MOUNT_POINT/@data/boot-last-overlay"
 
 umount "$MOUNT_POINT"
+
+# Close the LUKS container
+if [ "$ENCRYPT" -eq 1 ]; then
+    cryptsetup close immutable-crypt 2>/dev/null || true
+fi
 
 echo ""
 echo "══════════════════════════════════════"

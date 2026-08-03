@@ -26,8 +26,9 @@ cd holodeck
 ```
 
 Prerequisites: a UEFI system, a spare disk, root access, and
-`debootstrap zstd btrfs-progs parted dosfstools`
-(`sudo apt install debootstrap zstd btrfs-progs parted dosfstools`).
+`debootstrap zstd btrfs-progs parted dosfstools` (and `cryptsetup` if you
+enable encryption).
+(`sudo apt install debootstrap zstd btrfs-progs parted dosfstools cryptsetup`).
 
 ### 1. Build the base rootfs
 
@@ -59,7 +60,8 @@ sudo ./install.sh --device /dev/sdX
 
 **WARNING: This erases all data on the target disk.**
 The installer prompts for the username and password to create (or pass
-`--username`/`--password`).
+`--username`/`--password`), and asks whether to encrypt the root filesystem
+with LUKS (default no; pass `--encrypt` for full-disk encryption).
 
 ### 4. Boot and use
 
