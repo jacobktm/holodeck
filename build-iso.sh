@@ -5,15 +5,17 @@ set -euo pipefail
 #   1. build the Rust immutable CLI        (build-rust.sh)
 #   2. assemble the immutable data bundle  (build-bundle.sh)
 #   3. build classic distinst debs         (build-distinst.sh)
-#        — libdistinst-dev is a Build-Depends of pop-installer
-#   4. build distinst-v2 debs              (build-distinst-v2.sh)
-#        — the DBus installer service pop-installer drives at runtime
-#   5. build pop-installer debs            (build-installer.sh)
-#   6. stage the override debs and run the forked ISO build
+#        — the install engine; pop-installer drives it via the C API
+#   4. build pop-installer debs            (build-installer.sh)
+#   5. stage the override debs and run the forked ISO build
+#
+# Only classic distinst and pop-installer are forked (the immutable port
+# lives there); distinst-v2 stays stock from apt since pop-installer merely
+# uses it for live-session disk discovery.
 #
 # The iso fork reads LOCAL_DEBS (dir of .deb) and IMMUTABLE_BUNDLE (dir) as
 # make variables; chroot.mk copies them into the live rootfs and replaces the
-# stock pop-os distinst-v2/pop-installer with ours.
+# stock pop-os distinst/pop-installer with ours.
 
 cd "$(dirname "$0")"
 
@@ -26,39 +28,34 @@ export BUNDLE="$(pwd)/dist/immutable-bundle"
 export ISO_DEBS="$(pwd)/dist/iso-debs"
 
 echo "═══════════════════════════════════════════════"
-echo " 1/6  Building Rust immutable CLI"
+echo " 1/5  Building Rust immutable CLI"
 echo "═══════════════════════════════════════════════"
 ./build-rust.sh
 
 echo "═══════════════════════════════════════════════"
-echo " 2/6  Assembling immutable data bundle"
+echo " 2/5  Assembling immutable data bundle"
 echo "═══════════════════════════════════════════════"
 ./build-bundle.sh
 
 echo "═══════════════════════════════════════════════"
-echo " 3/6  Building classic distinst debs"
+echo " 3/5  Building distinst debs"
 echo "═══════════════════════════════════════════════"
 ./build-distinst.sh
 
 echo "═══════════════════════════════════════════════"
-echo " 4/6  Building distinst-v2 debs"
-echo "═══════════════════════════════════════════════"
-./build-distinst-v2.sh
-
-echo "═══════════════════════════════════════════════"
-echo " 5/6  Building pop-installer debs"
+echo " 4/5  Building pop-installer debs"
 echo "═══════════════════════════════════════════════"
 ./build-installer.sh
 
 echo "═══════════════════════════════════════════════"
-echo " 6/6  Staging override debs + building ISO"
+echo " 5/5  Staging override debs + building ISO"
 echo "      ($DISTRO_CODE $DISTRO_VERSION, NVIDIA=$NVIDIA)"
 echo "═══════════════════════════════════════════════"
 rm -rf "$ISO_DEBS"
 mkdir -p "$ISO_DEBS"
-cp "$DEBS"/distinst-v2_*.deb "$ISO_DEBS"/
+cp "$DEBS"/distinst_*.deb "$ISO_DEBS"/
+cp "$DEBS"/libdistinst_*.deb "$ISO_DEBS"/
 cp "$DEBS"/pop-installer_*.deb "$ISO_DEBS"/
-cp "$DEBS"/gir1.2-pop-installer_*.deb "$ISO_DEBS"/ 2>/dev/null || true
 ls -1 "$ISO_DEBS"
 
 exec make -C forks/iso \
