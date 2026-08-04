@@ -290,8 +290,14 @@ reinstall_hooks
 
 # Temporary proxy for install speed — removed before finishing so the
 # installed system relies on the apt-proxy-detect hook instead.
+#
+# The rootfs tarball already ships 99-immutable-proxy (ProxyAutoDetect).
+# ProxyAutoDetect takes precedence over a static proxy, and the detect
+# script returns nothing during install (no config file, no mDNS), so apt
+# goes direct. Remove it for now — it is reinstalled fresh at the end.
 if [ -n "$APT_PROXY" ]; then
     mkdir -p "$MOUNT_POINT/etc/apt/apt.conf.d"
+    rm -f "$MOUNT_POINT/etc/apt/apt.conf.d/99-immutable-proxy"
     echo "Acquire::http::Proxy \"$APT_PROXY\";" > "$MOUNT_POINT/etc/apt/apt.conf.d/99proxy"
 fi
 
