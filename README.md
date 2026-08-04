@@ -110,6 +110,38 @@ immutable delete cosmic-files-v1
 | `immutable clean-boot` | Remove stale boot entries from the ESP |
 | `immutable update-initramfs` | Regenerate initramfs in boot overlay and update ESP |
 | `immutable ensure` | Reinstall immutable hooks and system files |
+| `immutable export <name> [--mode sanitized\|minimal\|full] [-o file.zst]` | Export an overlay for sharing |
+| `immutable import <file.zst> [--name NAME] [--switch]` | Import an overlay onto this system |
+
+## Sharing Overlays
+
+Export any overlay to a compressed artifact and import it on another machine:
+
+```sh
+# On the source system
+sudo immutable export cosmic-workstation
+
+# Copy overlay-cosmic-workstation.zst to the target (USB/SCP), then:
+sudo immutable import overlay-cosmic-workstation.zst --switch
+sudo reboot
+```
+
+The import re-initializes machine-specific state on the target: fstab and boot
+entries point at the target's pool and ESP, the hostname and user are adopted,
+SSH host keys and machine-id are regenerated, and the initramfs is rebuilt for
+the target's hardware (encrypted targets install `cryptsetup` into the overlay
+automatically).
+
+`--mode` controls what the artifact carries:
+
+- `sanitized` (default) — strips SSH host keys, machine-id, network state, and
+  per-user secrets (`~/.ssh`, `~/.gnupg`, browser profiles), keeping dotfiles and
+  system config so the tuned desktop transfers
+- `minimal` — strips host keys and machine-id only
+- `full` — keeps everything (for migration/backup, not sharing)
+
+Note: user data in `@data` (Documents, Downloads, etc.) is bind-mounted, not part
+of the overlay, so it is never included in an export.
 
 ## Testing Workflow
 
