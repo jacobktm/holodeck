@@ -114,6 +114,38 @@ All arguments are passed through to update-initramfs
 .BR \-u ", " \-k6.8.0\-40\-generic ", " \-c ).
 Only operates on the active boot overlay.
 .TP
+.BI export " name" [" --mode " mode] [" -o " file]
+Export an overlay as a compressed btrfs send stream so it can be
+imported on another system.
+.I mode
+selects how much machine-specific and per-user data is kept:
+.RS 4
+.nf
+sanitized  strip SSH host keys, machine-id, network state, and per-user
+           secrets (~/.ssh, ~/.gnupg, browser profiles). Keep dotfiles
+           and system config so the tuned desktop transfers. (default)
+minimal    strip SSH host keys and machine-id only
+full       keep everything, including host keys and user secrets
+.fi
+.RE
+The artifact defaults to
+.BR overlay- name .zst.
+Machine-specific files (fstab UUIDs, hostname, crypttab) are always
+re-initialized on the importing system, regardless of mode.
+.TP
+.BI import " file" [" --name " name] [" --switch "]
+Import an exported overlay from a compressed btrfs send stream.
+The overlay is materialized as
+.BR @overlay- name
+(based on the artifact's name unless
+.B --name
+is given), its fstab, boot entry, hostname, and user are re-initialized
+for this system, and its initramfs is rebuilt for this hardware.
+Use
+.B --switch
+to make it the boot overlay immediately; otherwise boot it later with
+.BR "switch " name.
+.TP
 .B update
 Copy the
 .B immutable

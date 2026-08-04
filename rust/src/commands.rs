@@ -149,7 +149,7 @@ fn is_valid_overlay_name(name: &str) -> bool {
     !name.is_empty() && !name.starts_with('@') && name != "base" && name != "data"
 }
 
-fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &config::Config) {
+pub fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &config::Config) {
     let overlay_esp = format!("{overlay_root}/boot/efi");
     let real_esp = cfg.esp_path();
     // Populate overlay ESP copy from real ESP (idempotent)

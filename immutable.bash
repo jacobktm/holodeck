@@ -18,7 +18,7 @@ _immutable() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    local subcommands="create shell run list list-names switch reset delete status lock unlock recovery reset-recovery clean-boot update-initramfs update help"
+    local subcommands="create shell run list list-names switch reset delete status lock unlock recovery reset-recovery clean-boot update-initramfs update export import help"
 
     # Completing the command name itself (e.g. immu<TAB>)
     if [ "$COMP_CWORD" -eq 0 ]; then
@@ -35,13 +35,20 @@ _immutable() {
     local subcmd="${COMP_WORDS[1]}"
 
     case "$subcmd" in
-        shell|run|switch|reset|delete)
+        shell|run|switch|reset|delete|export)
             # Second argument: overlay names
             if [ "$COMP_CWORD" -eq 2 ]; then
                 _immutable_overlays
                 return
             fi
             # For 'run', third+ args are commands — no completion
+            ;;
+        import)
+            # Second argument: artifact file
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -f -- "$cur"))
+                return
+            fi
             ;;
         create)
             case "$prev" in

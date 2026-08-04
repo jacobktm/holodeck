@@ -4,6 +4,9 @@ mod commands;
 mod config;
 mod mount;
 mod pty;
+mod transfer;
+
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
@@ -54,6 +57,22 @@ enum Commands {
     },
     /// Ensure all immutable system files are installed and up to date
     Ensure,
+    /// Export an overlay as a compressed btrfs send stream
+    Export {
+        name: String,
+        #[arg(short, long, default_value = "sanitized", value_parser = ["sanitized", "minimal", "full"])]
+        mode: String,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Import an exported overlay from a compressed btrfs send stream
+    Import {
+        file: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        switch: bool,
+    },
 }
 
 fn main() {
@@ -74,6 +93,8 @@ fn main() {
         Commands::Shell { name, args } => commands::cmd_shell(name, args),
         Commands::Run { name, args } => commands::cmd_run(name, args),
         Commands::Ensure => commands::cmd_ensure(),
+        Commands::Export { name, mode, output } => transfer::cmd_export(name, mode, output.as_deref()),
+        Commands::Import { file, name, switch } => transfer::cmd_import(file, name.as_deref(), *switch),
     };
     match result {
         Ok(()) => std::process::exit(0),
