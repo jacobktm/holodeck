@@ -9,6 +9,7 @@ __pycache__/
 
 # Build outputs
 base-rootfs.tar.zst
+/dist/
 
 # Editor / OS
 *.swp

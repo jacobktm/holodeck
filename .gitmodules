@@ -1,0 +1,9 @@
+[submodule "forks/distinst"]
+	path = forks/distinst
+	url = https://github.com/jacobktm/distinst.git
+[submodule "forks/installer"]
+	path = forks/installer
+	url = https://github.com/jacobktm/installer.git
+[submodule "forks/iso"]
+	path = forks/iso
+	url = https://github.com/jacobktm/iso.git
