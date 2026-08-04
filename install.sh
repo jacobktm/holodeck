@@ -133,8 +133,10 @@ parted -s "$TARGET_DEVICE" set 1 esp on
 parted -s "$TARGET_DEVICE" mkpart swap linux-swap "$SWAP_START" "$SWAP_END"
 parted -s "$TARGET_DEVICE" mkpart root btrfs "$SWAP_END" 100%
 
-sleep 1
+# Ensure udev has finished processing the new partition table before
+# touching any partition node — plain partprobe is not reliable on NVMe.
 partprobe "$TARGET_DEVICE" 2>/dev/null || true
+udevadm settle --timeout=10
 
 if [[ "$TARGET_DEVICE" == *"nvme"* ]] || [[ "$TARGET_DEVICE" == *"mmcblk"* ]]; then
     PART_EFI="${TARGET_DEVICE}p1"
@@ -147,6 +149,10 @@ else
 fi
 
 echo "EFI: $PART_EFI  Swap: $PART_SWAP  Root: $PART_ROOT"
+
+[ -b "$PART_EFI" ] || die "Partition $PART_EFI did not appear — NVMe udev issue"
+[ -b "$PART_SWAP" ] || die "Partition $PART_SWAP did not appear"
+[ -b "$PART_ROOT" ] || die "Partition $PART_ROOT did not appear"
 
 # ── Format ──
 
