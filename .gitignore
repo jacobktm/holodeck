@@ -11,6 +11,12 @@ __pycache__/
 base-rootfs.tar.zst
 /dist/
 
+# dpkg-buildpackage artifacts (land in forks/ from submodule builds)
+/forks/*.deb
+/forks/*.changes
+/forks/*.buildinfo
+/forks/*.ddeb
+
 # Editor / OS
 *.swp
 *.swo

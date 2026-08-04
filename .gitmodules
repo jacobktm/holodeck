@@ -7,3 +7,6 @@
 [submodule "forks/iso"]
 	path = forks/iso
 	url = https://github.com/jacobktm/iso.git
+[submodule "forks/distinst-v2"]
+	path = forks/distinst-v2
+	url = https://github.com/jacobktm/distinst-v2.git
