@@ -85,6 +85,17 @@ pub fn cmd_status() -> Result<(), String> {
         }
     }
 
+    // Show last base-update result if present
+    let ub_path = format!("{}/@data/update-base-result", cfg.pool);
+    if let Ok(res) = std::fs::read_to_string(&ub_path) {
+        let res = res.trim();
+        if !res.is_empty() {
+            println!("=== Base Update ===");
+            println!("{}", res);
+            println!();
+        }
+    }
+
     println!("Overlays:");
     let overlays = btrfs::list_overlays(&cfg)?;
     for ov in &overlays {
@@ -138,7 +149,7 @@ pub fn cmd_create(name: &str, from: Option<&str>) -> Result<(), String> {
 
     // Customize overlay's ESP immutable.conf to point to the new subvol
     let new_subvol = format!("@overlay-{name}");
-    customize_overlay_esp(&dst, &new_subvol, &cfg);
+    customize_overlay_esp(&dst, &new_subvol, &cfg, &src);
 
     println!("Created overlay '{name}' from {src}");
     println!("{dst}");
@@ -149,13 +160,31 @@ fn is_valid_overlay_name(name: &str) -> bool {
     !name.is_empty() && !name.starts_with('@') && name != "base" && name != "data"
 }
 
-fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &config::Config) {
+pub(crate) fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &config::Config, source: &str) {
     let overlay_esp = format!("{overlay_root}/boot/efi");
-    let real_esp = cfg.esp_path();
-    // Populate overlay ESP copy from real ESP (idempotent)
-    let _ = std::process::Command::new("rsync")
-        .args(["-a", &format!("{real_esp}/"), &format!("{overlay_esp}/")])
-        .status();
+
+    // Seed the new overlay's ESP copy from the source's ESP truth:
+    //   - if the source is the currently active overlay, its local ESP copy lags
+    //     the real ESP (kernel postinst hooks write only to the real ESP; the
+    //     local copy is refreshed on `switch`), so seed from the real ESP.
+    //   - otherwise the source's local ESP copy matches its own module lineage
+    //     and must be used, or the overlay would boot a kernel whose
+    //     /usr/lib/modules aren't present in its rootfs.
+    let active = btrfs::get_active_subvol(cfg).ok().flatten();
+    let is_active_source = active
+        .map(|a| source == format!("{}/{}", cfg.pool, a))
+        .unwrap_or(false);
+    let seed = if is_active_source {
+        cfg.esp_path().to_string()
+    } else {
+        format!("{source}/boot/efi")
+    };
+
+    if Path::new(&seed).is_dir() {
+        let _ = std::process::Command::new("rsync")
+            .args(["-a", &format!("{seed}/"), &format!("{overlay_esp}/")])
+            .status();
+    }
     // Fix immutable.conf to point to the correct subvol
     let conf_path = format!("{overlay_esp}/loader/entries/immutable.conf");
     if let Ok(content) = std::fs::read_to_string(&conf_path) {
@@ -277,7 +306,7 @@ pub fn cmd_reset(name: &str) -> Result<(), String> {
     } else {
         format!("@overlay-{name}")
     };
-    customize_overlay_esp(&dst, &subvol, &cfg);
+    customize_overlay_esp(&dst, &subvol, &cfg, &src);
     println!("Reset overlay '{name}' from {src}");
     Ok(())
 }
@@ -362,7 +391,7 @@ pub fn cmd_reset_recovery() -> Result<(), String> {
         btrfs::delete_subvol(&recovery)?;
     }
     btrfs::snapshot(&src, &recovery)?;
-    customize_overlay_esp(&recovery, "@overlay-recovery", &cfg);
+    customize_overlay_esp(&recovery, "@overlay-recovery", &cfg, &src);
     btrfs::set_property(&recovery, "ro", "true")?;
     println!("Recovery overlay recreated from @base (read-only)");
     Ok(())
@@ -465,7 +494,7 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_overlay_to_esp(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
+pub(crate) fn sync_overlay_to_esp(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
     let overlay_esp = format!("{overlay_root}/boot/efi");
     let real_esp = cfg.esp_path();
     if !Path::new(&overlay_esp).is_dir() {
@@ -481,7 +510,7 @@ fn sync_overlay_to_esp(overlay_root: &str, cfg: &config::Config) -> Result<(), S
     Ok(())
 }
 
-fn sync_esp_to_overlay(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
+pub(crate) fn sync_esp_to_overlay(overlay_root: &str, cfg: &config::Config) -> Result<(), String> {
     let overlay_esp = format!("{overlay_root}/boot/efi");
     let real_esp = cfg.esp_path();
     std::fs::create_dir_all(&overlay_esp)

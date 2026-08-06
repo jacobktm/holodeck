@@ -97,6 +97,51 @@ Switch to the recovery overlay.
 Re-snapshot the recovery overlay from
 .BR @base .
 .TP
+.BI update-base " [--no-reboot]"
+Update
+.B @base
+transactionally using the SUSE transactional-update model.
+A temporary overlay
+.BR @overlay-update
+is snapshotted from
+.BR @base ,
+apt runs inside it during a dedicated update boot, and on success it is
+promoted (renamed) to
+.BR @base ;
+on failure the system boots back to the overlay it came from and
+.B @overlay-update
+is discarded.
+.B WARNING:
+this feature is currently broken and should not be used.
+See
+.BR "KNOWN ISSUES"
+below.
+The previous base is kept as
+.B @base-old
+(plus
+.BR @base-old-2 ),
+the oldest being dropped, and
+.B @overlay-recovery
+is recreated from the new base.
+.B @overlay-init
+is never touched.
+The
+.B \-\-no-reboot
+flag stages the update without rebooting.
+.TP
+.BI restore-base " [--no-reboot]"
+Restore the previous base by snapshotting
+.B @base-old
+into
+.B @overlay-update
+and promoting it back to
+.BR @base ,
+shifting the current base into the
+.B @base-old
+chain.
+Follows the same transactional boot flow as
+.BR update-base .
+.TP
 .B clean-boot
 Remove stale boot entries from the ESP whose kernel files
 no longer exist.
@@ -193,6 +238,19 @@ Shared user data.
 .TP
 .B /etc/immutable.conf
 System configuration (username).
+.SH KNOWN ISSUES
+The
+.B update-base
+and
+.B restore-base
+commands are currently broken and are not recommended for use.
+The update runs during a dedicated reboot with no on-screen progress, can
+appear stuck at the splash screen for long periods, and a hard power loss
+mid-update re-enters the update boot with no way to tell what happened.
+The design goal is to perform base updates directly inside a shell (see
+.BR "immutable shell" )
+once kernel updates in an overlay shell are supported, removing the reboot
+and dedicated update service entirely.
 .SH SEE ALSO
 .BR immutable-daemon (8),
 .BR btrfs (8),
