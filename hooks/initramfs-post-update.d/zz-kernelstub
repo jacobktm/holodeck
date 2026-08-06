@@ -143,6 +143,21 @@ elif mountpoint -q /boot/efi 2>/dev/null; then
     # Chroot path: /boot/efi is mounted (install.sh block device or overlay shell bind)
     ESP="/boot/efi"
     ESP_DIR=$(find_esp_dir "$ESP")
+    if [ -z "$ESP_DIR" ]; then
+        # Self-heal: the ESP copy has no kernel directory. Create one so the
+        # initramfs update still lands. UUID from an existing Pop_OS-* dir,
+        # else the root=UUID= on the boot cmdline (the pool UUID).
+        esp_uuid=""
+        for d in "$ESP"/EFI/Pop_OS-*; do
+            [ -d "$d" ] || continue
+            esp_uuid="${d##*/Pop_OS-}"
+            break
+        done
+        [ -n "$esp_uuid" ] || esp_uuid="$(grep -oP 'root=UUID=\K[0-9a-fA-F-]+' /proc/cmdline 2>/dev/null | head -n1 || true)"
+        if [ -n "$esp_uuid" ]; then
+            mkdir -p "$ESP/EFI/Pop_OS-$esp_uuid" 2>/dev/null && ESP_DIR="$ESP/EFI/Pop_OS-$esp_uuid"
+        fi
+    fi
     [ -n "$ESP_DIR" ] || exit 0
 
     INITRD_SRC="$2"

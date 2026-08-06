@@ -55,8 +55,29 @@ pub fn sync_kernel_initrd(source_root: &str, esp_efi_dir: &str) -> Result<(), St
     std::fs::create_dir_all(esp_efi_dir)
         .map_err(|e| format!("Failed to create {esp_efi_dir}: {e}"))?;
 
-    std::fs::copy(&kernel_src, format!("{esp_efi_dir}/vmlinuz.efi"))
-        .map_err(|e| format!("Failed to copy kernel: {e}"))?;
+    let vmlinuz_path = format!("{esp_efi_dir}/vmlinuz.efi");
+    let header = std::fs::read(&kernel_src)
+        .map_err(|e| format!("Failed to read kernel {kernel_src}: {e}"))?
+        .get(..2)
+        .map(|b| b.to_vec())
+        .unwrap_or_default();
+    if header == [0x1f, 0x8b] {
+        // Gzip-compressed kernel (Pop): decompress so systemd-boot gets a PE
+        // image, matching what the postinst hooks write to vmlinuz.efi.
+        let out = std::process::Command::new("gunzip")
+            .arg("-c")
+            .arg(&kernel_src)
+            .output()
+            .map_err(|e| format!("Failed to run gunzip: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("gunzip failed for {kernel_src}"));
+        }
+        std::fs::write(&vmlinuz_path, out.stdout)
+            .map_err(|e| format!("Failed to write {vmlinuz_path}: {e}"))?;
+    } else {
+        std::fs::copy(&kernel_src, &vmlinuz_path)
+            .map_err(|e| format!("Failed to copy kernel: {e}"))?;
+    }
     std::fs::copy(&initrd_src, format!("{esp_efi_dir}/initrd.img"))
         .map_err(|e| format!("Failed to copy initrd: {e}"))?;
 

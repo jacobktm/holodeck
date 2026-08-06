@@ -94,6 +94,25 @@ pub fn mount_overlay_esp(ctx: &mut MountContext, overlay_root: &str) -> Result<(
     Ok(())
 }
 
+/// Bind-mount the real ESP into the chroot.
+/// Used when shelling into the currently active overlay, so kernel/initramfs
+/// updates land on the bootable ESP (installer-style) instead of the lagging
+/// local clone. The mount is tracked in ctx for cleanup on drop.
+pub fn mount_real_esp(ctx: &mut MountContext) -> Result<(), String> {
+    let esp_target = format!("{}/boot/efi", ctx.root);
+    std::fs::create_dir_all(&esp_target)
+        .map_err(|e| format!("Failed to create {esp_target}: {e}"))?;
+    let status = Command::new("mount")
+        .args(["--bind", "/boot/efi", &esp_target])
+        .status()
+        .map_err(|e| format!("mount --bind /boot/efi failed: {e}"))?;
+    if !status.success() {
+        return Err("Failed to bind-mount real ESP".to_string());
+    }
+    ctx.mounts.push(esp_target);
+    Ok(())
+}
+
 /// Bind-mount @data user directories, dotfiles, and immutable system data (hooks, CLI, etc.)
 /// into the overlay chroot. User files go under \$home; immutable files go under system paths.
 pub fn mount_data_dirs(ctx: &mut MountContext, data_path: &str, root: &str, username: &str) -> Result<(), String> {

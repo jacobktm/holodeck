@@ -212,6 +212,102 @@ pub(crate) fn customize_overlay_esp(overlay_root: &str, subvol: &str, cfg: &conf
     let _ = std::fs::write(&loader_conf_path, "default immutable.conf\ntimeout 0\nconsole-mode max\n");
 }
 
+/// UUID of the btrfs pool that `/` lives on (shared by all subvolumes).
+fn pool_fs_uuid() -> Option<String> {
+    let out = std::process::Command::new("findmnt")
+        .args(["-no", "UUID", "/"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if uuid.is_empty() { None } else { Some(uuid) }
+}
+
+/// The `Pop_OS-<uuid>` kernel-dir name for an ESP clone: an existing
+/// `Pop_OS-*` directory if present, else the pool UUID.
+fn esp_uuid(overlay_esp: &str) -> Option<String> {
+    let efi_dir = format!("{overlay_esp}/EFI");
+    if let Ok(mut entries) = std::fs::read_dir(&efi_dir) {
+        if let Some(found) = entries.find_map(|e| {
+            e.ok().and_then(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.strip_prefix("Pop_OS-").map(|s| s.to_string())
+            })
+        }) {
+            return Some(found);
+        }
+    }
+    pool_fs_uuid()
+}
+
+/// Ensure an overlay's local ESP copy is a complete, self-sufficient ESP for
+/// that overlay before it is mounted into a shell: create the boot/efi
+/// skeleton, seed a kernel/initrd from the overlay's own /boot when the copy
+/// lacks one, and (re)write immutable.conf/loader.conf to point at this
+/// overlay's subvol. Idempotent; never re-seeds wholesale from another source.
+pub(crate) fn ensure_overlay_esp(overlay_root: &str, subvol: &str) -> Result<(), String> {
+    let boot_dir = format!("{overlay_root}/boot");
+    if !Path::new(&boot_dir).is_dir() {
+        // Not a bootable overlay (e.g. @data): nothing to set up.
+        return Ok(());
+    }
+    let overlay_esp = format!("{boot_dir}/efi");
+    std::fs::create_dir_all(format!("{overlay_esp}/loader/entries"))
+        .map_err(|e| format!("Failed to create {overlay_esp}: {e}"))?;
+
+    let uuid = esp_uuid(&overlay_esp).unwrap_or_else(|| "unknown".to_string());
+    let esp_dir = match boot::find_esp_dir(&overlay_esp) {
+        Some(d) => d,
+        None => {
+            let d = format!("{overlay_esp}/EFI/Pop_OS-{uuid}");
+            std::fs::create_dir_all(&d)
+                .map_err(|e| format!("Failed to create {d}: {e}"))?;
+            d
+        }
+    };
+
+    // Seed the kernel/initrd from the overlay's own /boot if the copy lacks
+    // them, so postinst hooks always have a target to update.
+    if !Path::new(&format!("{esp_dir}/vmlinuz.efi")).is_file()
+        || !Path::new(&format!("{esp_dir}/initrd.img")).is_file()
+    {
+        if let Err(e) = boot::sync_kernel_initrd(overlay_root, &esp_dir) {
+            println!("immutable: warning: could not seed ESP kernel: {e}");
+        }
+    }
+
+    // Boot entry must point at this overlay's subvol.
+    let conf_path = format!("{overlay_esp}/loader/entries/immutable.conf");
+    let conf_ok = std::fs::read_to_string(&conf_path)
+        .map(|c| {
+            c.lines()
+                .any(|l| l.starts_with("options ") && l.contains(&format!("subvol={subvol}")))
+        })
+        .unwrap_or(false);
+    if !conf_ok {
+        let content = format!(
+            "title Immutable\nlinux /EFI/Pop_OS-{uuid}/vmlinuz.efi\ninitrd /EFI/Pop_OS-{uuid}/initrd.img\noptions root=UUID={uuid} ro quiet splash rootflags=subvol={subvol}\n"
+        );
+        std::fs::write(&conf_path, content)
+            .map_err(|e| format!("Failed to write {conf_path}: {e}"))?;
+    }
+
+    // loader.conf defaults to immutable.conf.
+    let loader_conf = format!("{overlay_esp}/loader/loader.conf");
+    let loader_ok = std::fs::read_to_string(&loader_conf)
+        .map(|c| c.lines().any(|l| l.starts_with("default ") && l.contains("immutable.conf")))
+        .unwrap_or(false);
+    if !loader_ok {
+        std::fs::write(&loader_conf, "default immutable.conf\ntimeout 0\nconsole-mode max\n")
+            .map_err(|e| format!("Failed to write {loader_conf}: {e}"))?;
+    }
+
+    Ok(())
+}
+
 pub fn cmd_delete(name: &str) -> Result<(), String> {
     if SYSTEM_OVERLAYS.contains(&name) {
         return Err(format!("Cannot delete {name}: it is a system overlay"));
@@ -556,11 +652,36 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
         return Err(format!("Overlay '{name}' not found at {root}"));
     }
 
+    // Determine the target subvol and whether it is the currently booted overlay.
+    let target_subvol = if matches!(name, "base" | "@base") {
+        "@base".to_string()
+    } else if matches!(name, "data" | "@data") {
+        "@data".to_string()
+    } else {
+        format!("@overlay-{name}")
+    };
+    let active = btrfs::get_active_subvol(&cfg).ok().flatten();
+    let is_active = active.as_deref() == Some(target_subvol.as_str());
+
+    // Make the overlay's local ESP copy complete before the shell starts so the
+    // kernel/initramfs hooks have a target to update inside it. The active
+    // overlay is skipped: its bootable ESP is the real one, which we mount below
+    // and sync back to the clone when the session ends.
+    if !is_active {
+        ensure_overlay_esp(&root, &target_subvol)?;
+    }
+
     use std::io::IsTerminal;
 
-    // Mount chroot, overlay ESP copy, and @data user directories into home
+    // Mount chroot, ESP (real one for the active overlay, else the overlay's
+    // own copy), and @data user directories into home
     let mut ctx = mount::mount_chroot(&root)?;
-    let _ = mount::mount_overlay_esp(&mut ctx, &root);
+    let esp_mount = if is_active {
+        mount::mount_real_esp(&mut ctx)
+    } else {
+        mount::mount_overlay_esp(&mut ctx, &root)
+    };
+    esp_mount.map_err(|e| format!("Cannot mount ESP for overlay shell: {e}"))?;
     let data_path = format!("{}/{}", cfg.pool, cfg.data_subvol);
     let _ = mount::mount_data_dirs(&mut ctx, &data_path, &root, &cfg.username);
     let _guard = mount::MountGuard::new(ctx);
@@ -569,7 +690,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
     let overlay_name = name.strip_prefix("@overlay-").unwrap_or(name);
     envs.push(("IMMUTABLE_OVERLAY".to_string(), overlay_name.to_string()));
 
-    if !std::io::stdin().is_terminal() {
+    let result = if !std::io::stdin().is_terminal() {
         // Non-interactive: pass env vars through sudo's KEY=val syntax
         let mut cmd = std::process::Command::new("chroot");
         cmd.arg(&root).arg("sudo");
@@ -582,39 +703,54 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
         } else {
             cmd.arg("/bin/bash").arg("-c").arg("cd ~ && exec /bin/bash --login");
         }
-        let status = cmd.status()
-            .map_err(|e| format!("chroot exec failed: {e}"))?;
-        if !status.success() {
-            return Err("Command failed".to_string());
-        }
-        return Ok(());
-    }
-
-    // Interactive: allocate PTY natively so sudo inside the chroot can prompt
-    // on the real terminal (e.g. for password entry)
-    let env_strings: Vec<String> = envs.iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    let shell_cmd = if args.is_empty() {
-        "cd ~ && exec /bin/bash --login".to_string()
+        cmd.status()
+            .map_err(|e| format!("chroot exec failed: {e}"))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err("Command failed".to_string())
+                }
+            })
     } else {
-        format!("cd ~ && {}", args.join(" "))
-    };
-    let mut cmd_args: Vec<&str> = vec!["chroot", &root, "sudo"];
-    for es in &env_strings {
-        cmd_args.push(es);
-    }
-    cmd_args.push("-u");
-    cmd_args.push(&cfg.username);
-    cmd_args.push("/bin/bash");
-    cmd_args.push("-c");
-    cmd_args.push(&shell_cmd);
+        // Interactive: allocate PTY natively so sudo inside the chroot can prompt
+        // on the real terminal (e.g. for password entry)
+        let env_strings: Vec<String> = envs.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        let shell_cmd = if args.is_empty() {
+            "cd ~ && exec /bin/bash --login".to_string()
+        } else {
+            format!("cd ~ && {}", args.join(" "))
+        };
+        let mut cmd_args: Vec<&str> = vec!["chroot", &root, "sudo"];
+        for es in &env_strings {
+            cmd_args.push(es);
+        }
+        cmd_args.push("-u");
+        cmd_args.push(&cfg.username);
+        cmd_args.push("/bin/bash");
+        cmd_args.push("-c");
+        cmd_args.push(&shell_cmd);
 
-    let status = pty::spawn_pty(&cmd_args)?;
-    if status != 0 {
-        return Err(format!("Command exited with status {status}"));
+        let status = pty::spawn_pty(&cmd_args)?;
+        if status != 0 {
+            Err(format!("Command exited with status {status}"))
+        } else {
+            Ok(())
+        }
+    };
+
+    // Refresh the active overlay's local ESP clone so the kernel/initrd written
+    // to the real ESP inside the shell is captured (mirrors sync_back_to_overlay
+    // in the postinst hooks).
+    if is_active {
+        if let Err(e) = sync_esp_to_overlay(&root, &cfg) {
+            println!("immutable: warning: could not refresh overlay ESP: {e}");
+        }
     }
-    Ok(())
+
+    result
 }
 
 pub fn cmd_run(name: &str, args: &[String]) -> Result<(), String> {
