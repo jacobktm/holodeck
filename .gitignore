@@ -10,6 +10,8 @@ __pycache__/
 # Build outputs
 base-rootfs.tar.zst
 /dist/
+/build/
+/.iso-build-number
 
 # dpkg-buildpackage artifacts (land in forks/ from submodule builds)
 /forks/*.deb
