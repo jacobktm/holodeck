@@ -26,15 +26,40 @@ pub fn spawn_pty(args: &[&str]) -> Result<i32, String> {
         return Err("unlockpt failed".to_string());
     }
 
+    // Make the PTY master non-blocking so the relay drain loops stop on
+    // EAGAIN instead of blocking on a second read() and stalling stdin
+    // forwarding (which froze interactive shells at the prompt).
+    let flags = unsafe { libc::fcntl(master, libc::F_GETFL) };
+    if flags < 0 {
+        unsafe { libc::close(master) };
+        return Err("fcntl F_GETFL failed".to_string());
+    }
+    if unsafe { libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        unsafe { libc::close(master) };
+        return Err("fcntl F_SETFL failed".to_string());
+    }
+
     let mut slave_buf = [0i8; 1024];
     if unsafe { libc::ptsname_r(master, slave_buf.as_mut_ptr(), slave_buf.len()) } < 0 {
         unsafe { libc::close(master) };
         return Err("ptsname_r failed".to_string());
     }
-    let slave_name = unsafe { std::ffi::CStr::from_ptr(slave_buf.as_ptr()) }
-        .to_str()
-        .map_err(|_| "invalid pts name".to_string())?
-        .to_string();
+
+    // Open the slave in the parent, before fork(). The child inherits the
+    // fd and never has to resolve or re-open the slave name, so no heap or
+    // String data is read across the fork boundary. (A corrupted slave
+    // name — "/dev/pts/3\332\336v" — previously left the master with no
+    // opened slave, so poll() never delivered POLLHUP and the relay hung.)
+    let slave = unsafe {
+        libc::open(
+            slave_buf.as_ptr() as *const libc::c_char,
+            libc::O_RDWR | libc::O_NOCTTY,
+        )
+    };
+    if slave < 0 {
+        unsafe { libc::close(master) };
+        return Err("open slave failed".to_string());
+    }
 
     // Self-pipe for SIGWINCH
     let mut sig_pipe = [-1i32; 2];
@@ -56,6 +81,7 @@ pub fn spawn_pty(args: &[&str]) -> Result<i32, String> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         unsafe { libc::close(master) };
+        unsafe { libc::close(slave) };
         unsafe { libc::close(sig_pipe[0]) };
         unsafe { libc::close(sig_pipe[1]) };
         SIGWINCH_PIPE.store(-1, Ordering::Relaxed);
@@ -72,27 +98,19 @@ pub fn spawn_pty(args: &[&str]) -> Result<i32, String> {
         }
         SIGWINCH_PIPE.store(-1, Ordering::Relaxed);
 
-        // Create new session and become session leader
+        // Create new session and become session leader, then make the
+        // already-open slave our controlling terminal.
         unsafe { libc::setsid() };
-
-        let slave_fd = unsafe {
-            libc::open(slave_name.as_ptr() as *const libc::c_char, libc::O_RDWR)
-        };
-        if slave_fd < 0 {
-            std::process::exit(1);
-        }
-
-        // Set as controlling terminal
-        unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) };
+        unsafe { libc::ioctl(slave, libc::TIOCSCTTY, 0) };
 
         // Redirect stdin/stdout/stderr
         unsafe {
-            libc::dup2(slave_fd, libc::STDIN_FILENO);
-            libc::dup2(slave_fd, libc::STDOUT_FILENO);
-            libc::dup2(slave_fd, libc::STDERR_FILENO);
+            libc::dup2(slave, libc::STDIN_FILENO);
+            libc::dup2(slave, libc::STDOUT_FILENO);
+            libc::dup2(slave, libc::STDERR_FILENO);
         }
-        if slave_fd > 2 {
-            unsafe { libc::close(slave_fd) };
+        if slave > 2 {
+            unsafe { libc::close(slave) };
         }
 
         // Restore default SIGWINCH handling before exec
@@ -117,6 +135,12 @@ pub fn spawn_pty(args: &[&str]) -> Result<i32, String> {
     }
 
     // ── Parent ──
+    // The child inherited the slave fd and dup2'd it onto 0/1/2 before any
+    // further code ran, so the parent can drop its copy now. When the child
+    // exits, the last slave fd closes and the master reports POLLHUP, which
+    // ends the relay loop.
+    unsafe { libc::close(slave) };
+
     // Keep sig_pipe[1] open — signal handler writes to it.
     // Close the read end of the sig pipe in the relay loop when we're done.
 
@@ -169,6 +193,14 @@ pub fn spawn_pty(args: &[&str]) -> Result<i32, String> {
         let nfds = if stdin_done { 2 } else { 3 };
         let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), nfds, -1) };
         if ret < 0 {
+            // poll() is never restarted by SA_RESTART (see signal(7)); a
+            // signal such as SIGWINCH surfaces as EINTR. Continue the relay
+            // instead of tearing the PTY down — the self-pipe below then
+            // processes the pending resize.
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
             break;
         }
 
@@ -230,11 +262,40 @@ pub fn spawn_pty(args: &[&str]) -> Result<i32, String> {
                     buf.len(),
                 )
             };
-            if n > 0 {
-                unsafe {
-                    libc::write(master, buf.as_ptr() as *const libc::c_void, n as usize);
+    if n > 0 {
+        // Master is non-blocking: a full slave input buffer surfaces as
+        // EAGAIN. Retry after polling for writability so pasted input is
+        // never dropped.
+        let mut off: usize = 0;
+        while off < n as usize {
+            let w = unsafe {
+                libc::write(
+                    master,
+                    (buf.as_ptr() as *const u8).add(off) as *const libc::c_void,
+                    n as usize - off,
+                )
+            };
+            if w > 0 {
+                off += w as usize;
+            } else if w < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EAGAIN) {
+                    let mut p = libc::pollfd {
+                        fd: master,
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    unsafe {
+                        libc::poll(&mut p as *mut libc::pollfd, 1, -1);
+                    }
+                } else {
+                    break;
                 }
             } else {
+                break;
+            }
+        }
+    } else {
                 // stdin EOF — stop polling it, but keep reading from master
                 stdin_done = true;
             }
