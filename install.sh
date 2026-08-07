@@ -223,7 +223,11 @@ echo "cryptswap UUID=$SWAP_UUID /dev/urandom swap,plain,offset=1024,cipher=aes-x
 
 # LUKS root — initramfs prompts for the passphrase at boot (matches Pop!_OS)
 if [ "$ENCRYPT" -eq 1 ]; then
-    echo "immutable-crypt UUID=$LUKS_UUID none luks" >> "$MOUNT_POINT/etc/crypttab"
+    # initramfs option: the cryptroot hook includes the root entry in the
+    # initramfs unconditionally (no root-device resolution needed), which
+    # matters when update-initramfs runs inside an overlay shell chroot where
+    # get_mnt_devno(/) cannot resolve the btrfs root device.
+    echo "immutable-crypt UUID=$LUKS_UUID none luks,initramfs" >> "$MOUNT_POINT/etc/crypttab"
 fi
 
 # ── Chroot setup ──
