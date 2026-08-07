@@ -139,9 +139,19 @@ if [ -n "$ESP_SRC" ] && [ -b "$ESP_SRC" ] && [ "$(findmnt -no FSTYPE / 2>/dev/nu
     sync_back_to_overlay
 
     [ -n "$RO_WAS" ] && mount -o remount,ro "$ESP" 2>/dev/null || true
-elif mountpoint -q /boot/efi 2>/dev/null; then
-    # Chroot path: /boot/efi is mounted (install.sh block device or overlay shell bind)
+elif [ -d /boot/efi ]; then
+    # Direct-copy path: the real ESP on the booted host, or an overlay ESP clone
+    # bind-mounted into a shell chroot. (mountpoint -q cannot see the clone from
+    # inside the chroot: /proc/self/mountinfo paths are host-rooted while the
+    # process's /boot/efi is chroot-rooted, so the path never matches.)
     ESP="/boot/efi"
+
+    RO_WAS=""
+    if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+        RO_WAS=1
+        mount -o remount,rw "$ESP" 2>/dev/null || exit 0
+    fi
+
     ESP_DIR=$(find_esp_dir "$ESP")
     if [ -z "$ESP_DIR" ]; then
         # Self-heal: the ESP copy has no kernel directory. Create one so the
@@ -173,6 +183,8 @@ elif mountpoint -q /boot/efi 2>/dev/null; then
 
     KS_OPTS=$(read_kernelstub_opts)
     sync_immutable_conf_opts "${ESP}/loader/entries/immutable.conf" "$KS_OPTS"
+
+    [ -n "$RO_WAS" ] && mount -o remount,ro "$ESP" 2>/dev/null || true
 
     exit 0
 fi

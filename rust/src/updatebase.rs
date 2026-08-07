@@ -117,8 +117,7 @@ if [ "$mode" = "restore" ]; then
     log "restore mode: skipping apt"
 else
     log "self-healing dpkg state"
-    dpkg --configure -a || true
-    apt-get -f install "${APT_OPTS[@]}" || true
+    dpkg --configure -a || apt-get -f install "${APT_OPTS[@]}" || fail "cannot repair dpkg state"
 
     wait_for_network || log "warning: network may be unavailable"
 
