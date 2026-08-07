@@ -115,6 +115,47 @@ find_esp_dir() {
     return 1
 }
 
+luks_root_entry() {
+    # Echo the first passphrase-required LUKS crypttab line (target then line).
+    [ -f /etc/crypttab ] || return 1
+    awk -F'[[:space:]]+' '
+        /^[[:space:]]*#/ || NF < 4 { next }
+        $3 == "none" && $4 ~ /(^|,)luks(,|$)/ { print $1, $0; exit }
+    ' /etc/crypttab
+}
+
+initrd_has_cryptroot() {
+    local initrd="$1" want="$2" tmp
+    [ -f "$initrd" ] || return 1
+    [ -n "$want" ] || return 1
+    command -v unmkinitramfs >/dev/null 2>&1 || return 0
+    tmp=$(mktemp -d)
+    if unmkinitramfs -t "$tmp" "$initrd" >/dev/null 2>&1 && \
+       [ -s "$tmp/cryptroot/crypttab" ] && grep -qw "$want" "$tmp/cryptroot/crypttab"; then
+        rm -rf "$tmp"
+        return 0
+    fi
+    rm -rf "$tmp"
+    return 1
+}
+
+# --- LUKS root initrd integrity check ---
+# The cryptroot hook's root-device detection (get_mnt_devno(/)) cannot resolve
+# the btrfs root from inside an overlay-shell chroot, so a passphrase LUKS
+# entry lacking the `initramfs` crypttab option is silently dropped from the
+# initrd, and the system boots to a busybox shell before the decrypt prompt.
+# Verify the freshly built initrd carries that entry's cryptroot config and
+# fail loudly instead of copying a broken initrd to the ESP.
+LUKS_ENTRY=$(luks_root_entry)
+INITRD_CHECK="$2"
+if [ -n "$LUKS_ENTRY" ] && [ -n "$INITRD_CHECK" ] && [ -f "$INITRD_CHECK" ]; then
+    LUKS_TARGET=${LUKS_ENTRY%% *}
+    if ! initrd_has_cryptroot "$INITRD_CHECK" "$LUKS_TARGET"; then
+        echo "zz-kernelstub: ERROR: initrd '$INITRD_CHECK' has no cryptroot config for '$LUKS_TARGET', but /etc/crypttab requires a boot-time passphrase. The cryptroot hook cannot resolve the root device inside this chroot; add the 'initramfs' option to that crypttab entry and re-run update-initramfs." >&2
+        exit 1
+    fi
+fi
+
 # --- Environment detection ---
 ESP_SRC=$(findmnt -no SOURCE /boot/efi 2>/dev/null || true)
 
