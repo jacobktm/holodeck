@@ -125,15 +125,23 @@ luks_root_entry() {
 }
 
 initrd_has_cryptroot() {
-    local initrd="$1" want="$2" tmp
+    local initrd="$1" want="$2" tmp crypttab_file=""
     [ -f "$initrd" ] || return 1
     [ -n "$want" ] || return 1
     command -v unmkinitramfs >/dev/null 2>&1 || return 0
     tmp=$(mktemp -d)
-    if unmkinitramfs -t "$tmp" "$initrd" >/dev/null 2>&1 && \
-       [ -s "$tmp/cryptroot/crypttab" ] && grep -qw "$want" "$tmp/cryptroot/crypttab"; then
-        rm -rf "$tmp"
-        return 0
+    if unmkinitramfs "$initrd" "$tmp" >/dev/null 2>&1; then
+        # unmkinitramfs extracts the initramfs into per-archive subdirs
+        # (early, early2, ..., main); the cryptroot config lives in the main one.
+        if [ -s "$tmp/main/cryptroot/crypttab" ]; then
+            crypttab_file="$tmp/main/cryptroot/crypttab"
+        elif [ -s "$tmp/cryptroot/crypttab" ]; then
+            crypttab_file="$tmp/cryptroot/crypttab"
+        fi
+        if [ -n "$crypttab_file" ] && grep -qw "$want" "$crypttab_file"; then
+            rm -rf "$tmp"
+            return 0
+        fi
     fi
     rm -rf "$tmp"
     return 1
