@@ -15,7 +15,7 @@ bootctl is-installed --quiet || exit 0
 
 ESP="/boot/efi"
 RO_WAS=""
-if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+if [ "$(findmnt -no RO "$ESP" 2>/dev/null)" = "ro" ]; then
     RO_WAS=1
     mount -o remount,rw "$ESP" 2>/dev/null || exit 0
 fi

@@ -172,7 +172,7 @@ if [ -n "$ESP_SRC" ] && [ -b "$ESP_SRC" ] && [ "$(findmnt -no FSTYPE / 2>/dev/nu
     ESP="/boot/efi"
 
     RO_WAS=""
-    if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+    if [ "$(findmnt -no RO "$ESP" 2>/dev/null)" = "ro" ]; then
         RO_WAS=1
         mount -o remount,rw "$ESP" 2>/dev/null || exit 0
     fi
@@ -196,7 +196,7 @@ elif [ -d /boot/efi ]; then
     ESP="/boot/efi"
 
     RO_WAS=""
-    if findmnt -no OPTIONS "$ESP" 2>/dev/null | grep -qw ro; then
+    if [ "$(findmnt -no RO "$ESP" 2>/dev/null)" = "ro" ]; then
         RO_WAS=1
         mount -o remount,rw "$ESP" 2>/dev/null || exit 0
     fi
