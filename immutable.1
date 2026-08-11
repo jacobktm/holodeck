@@ -97,25 +97,22 @@ Switch to the recovery overlay.
 Re-snapshot the recovery overlay from
 .BR @base .
 .TP
-.BI update-base " [--no-reboot]"
+.BI update-base
 Update
 .B @base
-transactionally using the SUSE transactional-update model.
+transactionally without rebooting.
 A temporary overlay
 .BR @overlay-update
 is snapshotted from
 .BR @base ,
-apt runs inside it during a dedicated update boot, and on success it is
-promoted (renamed) to
+apt runs inside that overlay (in a chroot, with its kernel/initrd written
+into the overlay's ESP copy), and on success the overlay is promoted
+(renamed) to
 .BR @base ;
-on failure the system boots back to the overlay it came from and
-.B @overlay-update
-is discarded.
-.B WARNING:
-this feature is currently broken and should not be used.
-See
-.BR "KNOWN ISSUES"
-below.
+on failure it is deleted and
+.B @base
+is left untouched.
+No reboot is required.
 The previous base is kept as
 .B @base-old
 (plus
@@ -125,11 +122,8 @@ the oldest being dropped, and
 is recreated from the new base.
 .B @overlay-init
 is never touched.
-The
-.B \-\-no-reboot
-flag stages the update without rebooting.
 .TP
-.BI restore-base " [--no-reboot]"
+.BI restore-base
 Restore the previous base by snapshotting
 .B @base-old
 into
@@ -139,8 +133,9 @@ and promoting it back to
 shifting the current base into the
 .B @base-old
 chain.
-Follows the same transactional boot flow as
-.BR update-base .
+Follows the same transactional in-process flow as
+.BR update-base ,
+without running apt.
 .TP
 .B clean-boot
 Remove stale boot entries from the ESP whose kernel files
@@ -238,19 +233,6 @@ Shared user data.
 .TP
 .B /etc/immutable.conf
 System configuration (username).
-.SH KNOWN ISSUES
-The
-.B update-base
-and
-.B restore-base
-commands are currently broken and are not recommended for use.
-The update runs during a dedicated reboot with no on-screen progress, can
-appear stuck at the splash screen for long periods, and a hard power loss
-mid-update re-enters the update boot with no way to tell what happened.
-The design goal is to perform base updates directly inside a shell (see
-.BR "immutable shell" )
-once kernel updates in an overlay shell are supported, removing the reboot
-and dedicated update service entirely.
 .SH SEE ALSO
 .BR immutable-daemon (8),
 .BR btrfs (8),

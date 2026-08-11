@@ -56,10 +56,6 @@ _immutable() {
                     ;;
             esac
             ;;
-        update-base|restore-base)
-            # Optional --no-reboot flag
-            COMPREPLY=($(compgen -W "--no-reboot" -- "$cur"))
-            ;;
     esac
 }
 

@@ -37,20 +37,12 @@ enum Commands {
     Unlock,
     /// Recreate recovery overlay from @base
     ResetRecovery,
-    /// Update @base transactionally (apt inside @overlay-update, promote on success)
+    /// Update @base transactionally (apt inside a temporary overlay, promoted on success)
     #[command(about = "Update @base transactionally")]
-    UpdateBase {
-        /// Stage the update but do not reboot
-        #[arg(long)]
-        no_reboot: bool,
-    },
+    UpdateBase,
     /// Restore the previous @base (@base-old) and promote it back
     #[command(about = "Restore the previous base")]
-    RestoreBase {
-        /// Stage the restore but do not reboot
-        #[arg(long)]
-        no_reboot: bool,
-    },
+    RestoreBase,
     /// Remove stale boot entries from ESP
     CleanBoot,
     /// Regenerate initramfs and sync to ESP
@@ -84,8 +76,8 @@ fn main() {
         Commands::Lock => commands::cmd_lock(),
         Commands::Unlock => commands::cmd_unlock(),
         Commands::ResetRecovery => commands::cmd_reset_recovery(),
-        Commands::UpdateBase { no_reboot } => updatebase::cmd_update_base(*no_reboot),
-        Commands::RestoreBase { no_reboot } => updatebase::cmd_restore_base(*no_reboot),
+        Commands::UpdateBase => updatebase::cmd_update_base(),
+        Commands::RestoreBase => updatebase::cmd_restore_base(),
         Commands::CleanBoot => commands::cmd_clean_boot(),
         Commands::UpdateInitramfs { args } => commands::cmd_update_initramfs(args),
         Commands::Shell { name, args } => commands::cmd_shell(name, args),

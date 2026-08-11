@@ -86,12 +86,14 @@ pub fn sync_kernel_initrd(source_root: &str, esp_efi_dir: &str) -> Result<(), St
 
 pub fn esp_remount(mode: &str) -> Result<bool, String> {
     let output = std::process::Command::new("findmnt")
-        .args(["-no", "OPTIONS", "/boot/efi"])
+        .args(["-no", "RO", "/boot/efi"])
         .output()
         .map_err(|e| format!("findmnt failed: {e}"))?;
 
-    let opts = String::from_utf8_lossy(&output.stdout);
-    let was_ro = opts.contains("ro");
+    // findmnt's RO column reports the actual mount state. Grepping the options
+    // string would match vfat's default `errors=remount-ro` as a spurious `ro`.
+    let ro_state = String::from_utf8_lossy(&output.stdout);
+    let was_ro = ro_state.trim() == "ro";
 
     if mode == "ro" && was_ro {
         return Ok(true);
