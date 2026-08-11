@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::{btrfs, boot, commands, config, mount};
 
@@ -50,12 +50,17 @@ fn ensure_pool(cfg: &config::Config) -> Result<(), String> {
 }
 
 /// Runs a command inside the overlay chroot as root, streaming its output.
+/// Stdin is closed (maintainer scripts cannot block on a tty prompt) and
+/// SYSTEMD_OFFLINE prevents any script from attempting to talk to the host
+/// systemd over the private /run we expose.
 fn chroot_run(root: &str, argv: &[&str]) -> Result<(), String> {
     let status = Command::new("chroot")
         .arg(root)
         .args(argv)
         .env("DEBIAN_FRONTEND", "noninteractive")
         .env("NEEDRESTART_MODE", "a")
+        .env("SYSTEMD_OFFLINE", "1")
+        .stdin(Stdio::null())
         .status()
         .map_err(|e| format!("Failed to run command inside {root}: {e}"))?;
     if !status.success() {
@@ -116,7 +121,7 @@ fn run_apt_in_overlay(root: &str) -> Result<(), String> {
             .map_err(|e| format!("Failed to chmod policy-rc.d: {e}"))?;
     }
 
-    let mut ctx = mount::mount_chroot(root)?;
+    let mut ctx = mount::mount_chroot(root, false)?;
     mount::mount_overlay_esp(&mut ctx, root)
         .map_err(|e| format!("Cannot mount the overlay ESP inside the update shell: {e}"))?;
     let _guard = mount::MountGuard::new(ctx);

@@ -36,7 +36,11 @@ impl MountGuard {
     }
 }
 
-pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
+/// Mounts the standard chroot tree. When `bind_run` is true the host /run is
+/// bind-mounted (interactive shells want the real systemd/DBus sockets); when
+/// false a private tmpfs covers /run so maintainer scripts running inside the
+/// chroot cannot see the host systemd and block on it during package installs.
+pub fn mount_chroot(root: &str, bind_run: bool) -> Result<MountContext, String> {
     let mut ctx = MountContext {
         root: root.to_string(),
         mounts: Vec::new(),
@@ -47,7 +51,6 @@ pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
         ("/sys", "/sys"),
         ("/dev", "/dev"),
         ("/dev/pts", "/dev/pts"),
-        ("/run", "/run"),
         ("/tmp", "/tmp"),
     ];
 
@@ -64,6 +67,27 @@ pub fn mount_chroot(root: &str) -> Result<MountContext, String> {
         if status.success() {
             ctx.mounts.push(target);
         }
+    }
+
+    // /run is handled separately: update-base isolates itself from the host
+    // systemd while shells keep seeing the real sockets.
+    let run_target = format!("{root}/run");
+    if !std::path::Path::new(&run_target).exists() {
+        std::fs::create_dir_all(&run_target)
+            .map_err(|e| format!("Failed to create {run_target}: {e}"))?;
+    }
+    let run_mount = if bind_run {
+        Command::new("mount")
+            .args(["--bind", "/run", &run_target])
+            .status()
+    } else {
+        Command::new("mount")
+            .args(["-t", "tmpfs", "tmpfs", &run_target])
+            .status()
+    }
+    .map_err(|e| format!("mount on {run_target} failed: {e}"))?;
+    if run_mount.success() {
+        ctx.mounts.push(run_target);
     }
 
     // Copy resolv.conf for DNS inside chroot

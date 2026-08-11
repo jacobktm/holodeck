@@ -521,7 +521,7 @@ pub fn cmd_update_initramfs(args: &[String]) -> Result<(), String> {
     }
 
     // Mount chroot (no ESP bind mount — overlay's own /boot/efi is accessible directly)
-    let ctx = mount::mount_chroot(&root)?;
+    let ctx = mount::mount_chroot(&root, true)?;
     let _guard = mount::MountGuard::new(ctx);
 
     // Run update-initramfs inside chroot
@@ -675,7 +675,7 @@ pub fn cmd_shell(name: &str, args: &[String]) -> Result<(), String> {
 
     // Mount chroot, ESP (real one for the active overlay, else the overlay's
     // own copy), and @data user directories into home
-    let mut ctx = mount::mount_chroot(&root)?;
+    let mut ctx = mount::mount_chroot(&root, true)?;
     let esp_mount = if is_active {
         mount::mount_real_esp(&mut ctx)
     } else {
