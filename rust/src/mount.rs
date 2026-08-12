@@ -90,9 +90,16 @@ pub fn mount_chroot(root: &str, bind_run: bool) -> Result<MountContext, String> 
         ctx.mounts.push(run_target);
     }
 
-    // Copy resolv.conf for DNS inside chroot
+    // Copy resolv.conf for DNS inside chroot. The overlay's own resolv.conf is
+    // typically a symlink into /run (systemd-resolved), which only resolves when
+    // the host /run is bind-mounted; with a private /run it dangles and glibc
+    // finds no nameserver. Drop the symlink and write the host resolver config
+    // as a plain file so the chroot can resolve names.
     let resolv_dst = format!("{root}/etc/resolv.conf");
-    let _ = std::fs::copy("/etc/resolv.conf", &resolv_dst);
+    let _ = std::fs::remove_file(&resolv_dst);
+    if std::fs::copy("/etc/resolv.conf", &resolv_dst).is_err() {
+        let _ = std::fs::copy("/run/systemd/resolve/resolv.conf", &resolv_dst);
+    }
 
     Ok(ctx)
 }
